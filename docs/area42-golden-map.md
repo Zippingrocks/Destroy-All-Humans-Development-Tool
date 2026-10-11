@@ -80,9 +80,9 @@ Accordingly:
 4. **Topology gate:** LOD vertex/triangle counts and tile boundaries match.
 5. **Unchanged-save gate:** a native read/save operation preserves the complete
    resource graph and unknown data; any byte differences are explained.
-6. **WorldEdit inspection gate:** any generated inspection project reopens
-   without repair and emits a deterministic loss report.
-7. **Visual gate:** WorldEdit views are compared from documented cameras against
+6. **CryptoEditor inspection gate:** any generated editor project reopens without
+   repair and emits a deterministic loss report.
+7. **Visual gate:** CryptoEditor views are compared from documented cameras against
    corrected mesh renders, not only the derived heightmap.
 8. **First native-edit gate:** on a disposable game copy, move exactly one
    scenery object, rebuild only the affected package set, and verify its

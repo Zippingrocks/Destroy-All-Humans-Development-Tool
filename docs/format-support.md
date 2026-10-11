@@ -3,7 +3,7 @@
 | Family | Discovery | Container decode | Native scene | Native write/repack | Editor interface |
 | --- | --- | --- | --- | --- | --- |
 | DAH prototype | Planned | Unsupported | Unsupported | Unsupported | Deferred |
-| DAH1 retail Xbox | Initial | Implemented and verified for Area 42 | Native terrain, both LODs, material slots, and bound BC1/BC3 textures | Unchanged-save proof pending | Read-only OBJ/MTL section inspection; WorldEdit evaluation planned |
+| DAH1 retail Xbox | Initial | Implemented and verified for Area 42 | Native terrain, both LODs, material slots, and bound BC1/BC3 textures | Unchanged-save proof pending | Read-only OBJ/MTL inspection; CryptoEditor shell planned |
 | DAH2 retail | Planned | Unsupported | Unsupported | Unsupported | Deferred |
 
 `inspect` recognizes the generic Zero Engine map-directory shape. It does not

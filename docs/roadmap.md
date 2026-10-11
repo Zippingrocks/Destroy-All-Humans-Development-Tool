@@ -31,7 +31,22 @@
   segment flags before calling the textured view accurate.
 - [ ] Expand the proven inspection view across every placement and both LODs.
 
-## 3. Unchanged native save
+## 3. CryptoEditor read-only shell
+
+- Establish CryptoEditor as a maintained TrenchBroom GPLv3 fork in its own
+  repository, with upstream attribution and a documented update strategy.
+- Define a versioned interchange/API boundary between CryptoEditor and `dahdev`.
+- Load Area 42's native LOD0/LOD1 reference meshes and material assignments
+  without converting them into brushes or a heightfield.
+- Add explicit DAH terrain, reference mesh, object, and unknown-data node types.
+- Keep brush construction available for new geometry without implying that a
+  brush is a lossless representation of retail terrain.
+- Implement terrain navigation and a first read-only heightfield overlay.
+
+This milestone may progress alongside native writer research, but it cannot
+write game packages.
+
+## 4. Unchanged native save
 
 - Serialize to a new output directory without editing the scene.
 - Require byte-identical output where the container permits it.
@@ -41,7 +56,7 @@
 
 No mutating editor command is allowed to write packages before this milestone.
 
-## 4. First native edit
+## 5. First native edit
 
 Use a disposable game copy:
 
@@ -55,27 +70,30 @@ Use a disposable game copy:
 This is the decisive proof that the project edits DAH rather than displaying a
 conversion.
 
-## 5. Editor interface evaluation
+## 6. CryptoEditor editing foundation
 
-- Expose the native scene through a stable editor API.
-- Evaluate WorldEdit's viewport, selection, transform tools, and undo/redo.
-- Keep the native writer and package rebuilder independent of the interface.
-- Choose thin adapter, component reuse, or maintained fork only after measuring
-  integration coupling and license obligations.
+- Add terrain sculpt/paint operations as commands over an explicit editable
+  terrain representation with deterministic conversion and loss reporting.
+- Add brush construction and CSG for new authored geometry.
+- Add native object placement, selection, transforms, properties, and
+  dependency inspection.
+- Keep the native writer and package rebuilder independent of the editor UI.
+- Reimplement useful SWBF2 WorldEdit behaviors; port source only if its license
+  is identified, GPLv3-compatible, and attribution is preserved.
 
-## 6. Broader DAH1 map systems
+## 7. Broader DAH1 map systems
 
 - Objects and their mesh LODs.
 - Collision, destruction, regions, paths, missions, and streaming.
 - Resource registration and cross-package dependency validation.
 
-## 7. Additional classic builds
+## 8. Additional classic builds
 
 - Give DAH2 and prototype builds independent profiles, evidence, and golden
   fixtures.
 - Share code only where binary evidence proves compatibility.
 
-## 8. New maps
+## 9. New maps
 
 Creating maps from scratch begins only after native editing and packaging are
 reliable. It requires resource registration, streaming, collision, gameplay

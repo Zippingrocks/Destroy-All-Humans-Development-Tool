@@ -8,19 +8,23 @@ against.
 
 The foundation is **DAH-native**. Retail and recomp evidence stays read-only.
 The tool imports DAH data into a lossless scene model, records provenance, and
-eventually writes verified DAH packages. WorldEdit is useful as an inspection
-tool and as interface infrastructure to evaluate, but Battlefront `.wld` and
-`.ter` formats are not part of the native DAH save path.
+eventually writes verified DAH packages. **CryptoEditor** is the standalone world
+editor being built for the Pandemic Development Tool. It uses TrenchBroom as
+its primary interface foundation while keeping Battlefront `.wld`/`.ter` and
+other editor formats out of the native DAH save path.
 
 ## Project shape
 
 1. **DAH-native core** preserves resource identities, relocations, load groups,
    original geometry, LOD relationships, unknown fields, and byte provenance.
-2. **Editor interface** operates on that core. The modern SWBF2
-   [WorldEdit project](https://github.com/PrismaticFlower/WorldEdit) is a useful
-   viewport/tool reference; its active upstream points to
-   [Codeberg](https://codeberg.org/PrismaticFlower/WorldEdit). No full fork is
-   assumed.
+2. **CryptoEditor** operates on that core. Its primary foundation is a
+   maintained [TrenchBroom](https://github.com/TrenchBroom/TrenchBroom) fork so
+   brush construction, texture alignment, selection, and familiar Radiant-like
+   workflows are native editor concepts. The modern SWBF2
+   [WorldEdit project](https://github.com/PrismaticFlower/WorldEdit) remains a
+   feature/reference source for terrain and Pandemic-oriented workflows until
+   its active [Codeberg](https://codeberg.org/PrismaticFlower/WorldEdit)
+   license is verified.
 3. **Game/build adapters** implement independently verified rules for DAH1
    retail, DAH2 retail, and prototype builds. Shared ancestry is a research lead,
    not proof of interchangeable formats.
@@ -77,7 +81,8 @@ python -m dahdev inspect "D:\path\to\blocks\sites\area42"
 ```
 
 See [the architecture](docs/architecture.md), [the roadmap](docs/roadmap.md),
-[the WorldEdit evaluation](docs/worldedit-evaluation.md),
+[the CryptoEditor plan](docs/cryptoeditor.md),
+[the WorldEdit feature evaluation](docs/worldedit-evaluation.md),
 [the Area 42 golden-map notes](docs/area42-golden-map.md), and the
 [format support matrix](docs/format-support.md).
 

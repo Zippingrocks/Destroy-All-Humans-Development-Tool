@@ -1,10 +1,9 @@
-# Architecture: DAH-native core first
+# Architecture: DAH-native core with CryptoEditor
 
 ## Boundary first
 
-The DAH map and a WorldEdit world are different data models. The project keeps
-a hard boundary between native data, the editor interface, and optional
-conversion views:
+The DAH map and an editor document are different data models. The project keeps
+a hard boundary between native data, CryptoEditor, and optional conversion views:
 
 ```text
 read-only game files
@@ -20,15 +19,15 @@ lossless, provenance-carrying DAH scene IR
         +--> build-specific DAH writer / package rebuilder
         |
         v
-editor interface (WorldEdit components are one candidate)
+CryptoEditor (TrenchBroom-derived interface)
         |
         v
 native edits or explicitly lossy inspection projections
 ```
 
-WorldEdit is an inspection tool and possible source of interface infrastructure,
-not the canonical definition of a DAH map. This prevents WorldEdit limitations
-from silently deleting DAH data.
+CryptoEditor is the editor product, not the canonical definition of a DAH map. Its
+TrenchBroom-derived document and any WorldEdit-inspired features sit above the
+native model so editor limitations cannot silently delete DAH data.
 
 ## Three independently testable parts
 
@@ -37,7 +36,7 @@ from silently deleting DAH data.
 The core owns resource identity, package membership, load groups, relocations,
 raw transforms, mesh buffers, ordered LOD relationships, object links, collision,
 mission data, destruction state, streaming metadata, and unknown byte spans. It
-must be usable without WorldEdit or any Battlefront format.
+must be usable without CryptoEditor or any editor/Battlefront format.
 
 ### Editor interface
 
@@ -84,7 +83,7 @@ The corrected LOD0 triangle mesh is the authoritative visual terrain reference.
 The 16-bit inspection heightmap is useful for navigation and a coarse editable
 terrain surface, but it is lossy and must not replace the mesh evidence.
 
-Any WorldEdit inspection projection should therefore use both:
+Any CryptoEditor inspection view should therefore use both:
 
 - mesh tiles for geometry that a heightfield cannot represent;
 - an optional generated terrain surface for coarse sculpting and editor tools;
@@ -95,18 +94,28 @@ Objects, materials, collision, regions, paths, missions, and destruction data
 are separate native systems. A visually plausible heightfield is not a
 completed map import and cannot be used as native save input.
 
-## WorldEdit integration
+## CryptoEditor integration
 
-WorldEdit is a modern SWBF2 editor, not Pandemic's internal DAH editor. Its
-viewport, selection, transform tools, and undo/redo are worth evaluating. Its
-Battlefront world, terrain, object, and munge assumptions are not DAH-native.
+CryptoEditor is a standalone editor in the Pandemic Development Tool family. A
+maintained TrenchBroom fork supplies the brush-first editing foundation:
+orthographic and perspective views, selection, texture alignment, entity tools,
+commands, and undo/redo. CryptoEditor adds native terrain, reference-mesh, object,
+collision, region, path, mission, and destruction concepts through its own
+document nodes and tools.
 
-The active upstream is maintained outside this repository and points to
-Codeberg. Until reusable boundaries, license obligations, and maintenance costs
-are understood, do not vendor its source or commit to a full fork. Start with a
-thin inspection adapter or a minimal interface experiment against the DAH core.
+The editor communicates with the DAH-native core through a versioned boundary.
+The preferred first boundary is a manifest/scene exchange plus a command or IPC
+layer, rather than linking Python reader internals directly into the C++ UI.
+Stable native resource identities and provenance cross the boundary; container
+pointers and editor-only brush structures do not.
 
-See [WorldEdit evaluation](worldedit-evaluation.md).
+SWBF2 WorldEdit is a feature and interaction reference, especially for terrain
+workflows. Its active upstream is maintained on Codeberg. No source is copied
+until its license is identified and shown compatible with CryptoEditor's GPLv3
+base. A clean implementation of the required behavior remains the default.
+
+See [the CryptoEditor plan](cryptoeditor.md) and the
+[WorldEdit feature evaluation](worldedit-evaluation.md).
 
 ## Writer invariants
 
