@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# Retail game data and generated reconstruction artifacts are local inputs.
+*.dir
+*.pkg
+*.xbe
+*.iso
+*.xiso
+*.npy
+*.npz
+*.obj
+

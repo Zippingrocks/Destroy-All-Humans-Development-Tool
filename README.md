@@ -1,0 +1,68 @@
+# Destroy All Humans! Development Tool
+
+This repository is the clean-room workspace for understanding and editing
+Pandemic's native *Destroy All Humans!* map data. Area 42 from DAH1 retail is
+the first golden map: it gives every reader, writer, and editor operation a
+known source, known hashes, and independently preserved geometry to compare
+against.
+
+The foundation is **DAH-native**. Retail and recomp evidence stays read-only.
+The tool imports DAH data into a lossless scene model, records provenance, and
+eventually writes verified DAH packages. WorldEdit is useful as an inspection
+tool and as interface infrastructure to evaluate, but Battlefront `.wld` and
+`.ter` formats are not part of the native DAH save path.
+
+## Project shape
+
+1. **DAH-native core** preserves resource identities, relocations, load groups,
+   original geometry, LOD relationships, unknown fields, and byte provenance.
+2. **Editor interface** operates on that core. The modern SWBF2
+   [WorldEdit project](https://github.com/PrismaticFlower/WorldEdit) is a useful
+   viewport/tool reference; its active upstream points to
+   [Codeberg](https://codeberg.org/PrismaticFlower/WorldEdit). No full fork is
+   assumed.
+3. **Game/build adapters** implement independently verified rules for DAH1
+   retail, DAH2 retail, and prototype builds. Shared ancestry is a research lead,
+   not proof of interchangeable formats.
+
+Remakes are separate backend projects until their compatibility requirements
+are established.
+
+## Current checkpoint
+
+- Source-directory inspection for Zero Engine `.dir` + `.pkg` maps.
+- Exact verification of the DAH1 USA Xbox retail Area 42 source files.
+- Optional verification of the corrected Area 42 LOD/transform reference
+  export.
+- Explicit support matrix for prototype, DAH1 retail, and DAH2 retail.
+- Architecture and reconstruction acceptance gates.
+- A milestone order that requires unchanged-map preservation before mutation.
+
+No game files or generated meshes are stored in this repository.
+
+## Quick start
+
+Python 3.11 or newer is sufficient; the current CLI has no third-party runtime
+dependencies.
+
+```powershell
+python -m dahdev profiles
+python -m dahdev inspect "D:\path\to\blocks\sites\area42"
+python -m dahdev verify `
+  --source "D:\path\to\blocks\sites\area42" `
+  --reference "D:\path\to\area42_heightmap_2026-10-11\lod_transform_verified_2026-10-11"
+python -m unittest discover -s tests -v
+```
+
+For a checkout that has not been installed, add `src` to `PYTHONPATH`:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m dahdev inspect "D:\path\to\blocks\sites\area42"
+```
+
+See [the architecture](docs/architecture.md), [the roadmap](docs/roadmap.md),
+[the WorldEdit evaluation](docs/worldedit-evaluation.md),
+[the Area 42 golden-map notes](docs/area42-golden-map.md), and the
+[format support matrix](docs/format-support.md).
+

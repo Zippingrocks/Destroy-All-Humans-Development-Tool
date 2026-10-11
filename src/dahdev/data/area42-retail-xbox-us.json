@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "fixture_id": "dah1-retail-xbox-us-area42",
+  "profile_id": "dah1-retail-xbox-us",
+  "map_name": "area42",
+  "description": "Destroy All Humans! USA retail Xbox Area 42 research fixture",
+  "source_files": {
+    "area42.dir": {
+      "size": 431188,
+      "sha256": "15111978ec1d0d7770fe83ed6a3a6e55fff83363433d74354c849e0cd9832297"
+    },
+    "discard.pkg": {
+      "size": 303112,
+      "sha256": "ec108df4970b04e0d4645a636809c962869726dd272a5e87aa170eb333c53c20"
+    },
+    "resident.pkg": {
+      "size": 5677064,
+      "sha256": "45f2e31ada7f17a55fdbf0db876c2f833992fe8c03425a89dc5d5609a9441a18"
+    },
+    "stream.pkg": {
+      "size": 27367432,
+      "sha256": "7b75a2d0e816c26ab46c40ae3f41dcac5e5595f4f21d1956b26fe2aaf79d19d3"
+    }
+  },
+  "reference_files": {
+    "area42_retail_lod0_retail_cpu_transform.obj": {
+      "sha256": "126a8a3b900646a0dfdd5eb109fce2a7505c38456fa7b9b5096673d6ea4831f8"
+    },
+    "area42_retail_lod1_retail_cpu_transform.obj": {
+      "sha256": "7f68e6adea059bd51a955d6b54b2869500cb0aa51fed3342e3602b56f4ce1dd5"
+    },
+    "area42_retail_lods_and_transforms.npz": {
+      "sha256": "6dc7f2bff9b914f71e451f3258204f1b539b62ad82bea722975d4d3e3a28dc2a"
+    },
+    "lod_transform_report.json": {
+      "sha256": "42a59da7d47ecc2a24ed898c860acbe5a0ada8202641508d9208a65e98911f8a"
+    }
+  },
+  "expected": {
+    "scene_sibling_records": 751,
+    "terrain_placements": 92,
+    "geometry_buffers": 184,
+    "lod0_vertices": 122956,
+    "lod0_triangles": 103634,
+    "lod1_vertices": 16240,
+    "lod1_triangles": 8120
+  },
+  "notes": [
+    "The fixture hashes identify the research inputs and are not a general disc-authenticity claim.",
+    "The corrected LOD mesh and transform archive are authoritative geometry references.",
+    "The inspection heightmap is deliberately excluded from the required reference set because it is lossy."
+  ]
+}
+
