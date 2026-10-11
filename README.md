@@ -1,4 +1,4 @@
-# Destroy All Humans! Development Tool
+# Destroy All Humans! Pandemic Development Suite
 
 This repository is the clean-room workspace for understanding and editing
 Pandemic's native *Destroy All Humans!* map data. Area 42 from DAH1 retail is
