@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from .dah1.container import BlockReader
+from .dah1.materials import export_textured_section, write_material_outputs
+from .dah1.terrain import read_terrain_scene, write_validation_outputs
 from .profiles import PROFILES, profiles_as_dicts
 from .source import inspect_source
 from .verify import verification_report
@@ -36,6 +39,33 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--reference", help="Corrected LOD/transform reference directory.")
     verify.add_argument("--fixture", default=str(DEFAULT_FIXTURE), help="Fixture manifest JSON.")
     verify.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+
+    terrain = subparsers.add_parser(
+        "terrain-validate",
+        help="Reconstruct Area 42 terrain from native structures and compare every reference array.",
+    )
+    terrain.add_argument("--source", required=True, help="Retail Area 42 block directory.")
+    terrain.add_argument(
+        "--reference",
+        required=True,
+        help="Verified reference NPZ or its containing directory.",
+    )
+    terrain.add_argument(
+        "--out",
+        required=True,
+        help="Generated validation output directory; must not be inside the source.",
+    )
+    terrain.add_argument("--json", action="store_true", help="Emit the full report as JSON.")
+
+    section = subparsers.add_parser(
+        "terrain-section-export",
+        help="Export one native Area 42 terrain placement as textured OBJ inspection data.",
+    )
+    section.add_argument("--source", required=True, help="Retail Area 42 block directory.")
+    section.add_argument("--placement", required=True, type=int, help="Zero-based terrain placement.")
+    section.add_argument("--lod", type=int, choices=(0, 1), default=0, help="LOD child to export.")
+    section.add_argument("--out", required=True, help="Generated output directory.")
+    section.add_argument("--json", action="store_true", help="Emit the manifest as JSON.")
 
     return parser
 
@@ -86,6 +116,95 @@ def _verify(args: argparse.Namespace) -> int:
     return 0 if report["verified"] else 1
 
 
+def _terrain_validate(args: argparse.Namespace) -> int:
+    source = Path(args.source).resolve()
+    output = Path(args.out).resolve()
+    if source == output or source in output.parents:
+        raise ValueError("validation output must not be written inside the retail source")
+
+    reference = Path(args.reference)
+    if reference.is_dir():
+        reference = reference / "area42_retail_lods_and_transforms.npz"
+    if not reference.is_file():
+        raise FileNotFoundError(f"reference archive not found: {reference}")
+
+    source_hashes_before = BlockReader(source).source_hashes()
+    scene = read_terrain_scene(source)
+    report = write_validation_outputs(
+        scene, reference, output, source_hashes_before
+    )
+    materials = write_material_outputs(scene, output)
+    source_hashes_after_materials = scene.reader.source_hashes()
+    report["material_reconstruction"] = {
+        "status": materials["status"],
+        "counts": materials["counts"],
+        "decoded_texture_previews": materials["decoded_texture_previews"],
+        "report": str((output / "area42_terrain_materials.json").resolve()),
+    }
+    report["source_sha256_after"] = source_hashes_after_materials
+    report["source_unchanged"] = source_hashes_before == source_hashes_after_materials
+    (output / "area42_terrain_validation.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+    if args.json:
+        _print_json(report)
+    else:
+        structural = report["structural_validation"]
+        lods = structural["lod_stats"]
+        print(f"Terrain placements:   {structural['terrain_placements']}")
+        print(f"Geometry buffers:     {structural['geometry_buffers']}")
+        print(f"Scene chain records:  {structural['scene_sibling_records']}")
+        for lod in lods:
+            print(
+                f"LOD{lod['lod']}:                 "
+                f"{lod['vertices']} vertices, {lod['triangles']} triangles, "
+                f"{lod['segments']} segments"
+            )
+        print(
+            "Reference arrays:    "
+            + (
+                "byte-for-byte match"
+                if report["reference_comparison"]["all_arrays_byte_equal"]
+                else "MISMATCH"
+            )
+        )
+        print(f"Source unchanged:     {'yes' if report['source_unchanged'] else 'NO'}")
+        print(
+            "Native materials:     "
+            f"{materials['counts']['unique_materials']} unique, "
+            f"{materials['counts']['unique_bound_textures']} bound textures"
+        )
+        print(f"Report:               {output / 'area42_terrain_validation.json'}")
+
+    passed = (
+        report["reference_comparison"]["all_arrays_byte_equal"]
+        and report["source_unchanged"]
+    )
+    return 0 if passed else 1
+
+
+def _terrain_section_export(args: argparse.Namespace) -> int:
+    source = Path(args.source).resolve()
+    output = Path(args.out).resolve()
+    if source == output or source in output.parents:
+        raise ValueError("inspection output must not be written inside the retail source")
+    scene = read_terrain_scene(source)
+    if not 0 <= args.placement < len(scene.placements):
+        raise ValueError(
+            f"placement must be between 0 and {len(scene.placements) - 1}"
+        )
+    report = export_textured_section(scene, args.placement, args.lod, output)
+    if args.json:
+        _print_json(report)
+    else:
+        print(f"Placement/LOD:        {args.placement}/{args.lod}")
+        print(f"Vertices:             {report['vertices']}")
+        print(f"Triangles:            {report['triangles']}")
+        print(f"Material slots:       {report['material_slots']}")
+        print(f"OBJ inspection view:  {report['obj']}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -96,6 +215,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _inspect(args.path, args.json)
         if args.command == "verify":
             return _verify(args)
+        if args.command == "terrain-validate":
+            return _terrain_validate(args)
+        if args.command == "terrain-section-export":
+            return _terrain_section_export(args)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         parser.exit(2, f"error: {error}\n")
     parser.error(f"Unknown command: {args.command}")

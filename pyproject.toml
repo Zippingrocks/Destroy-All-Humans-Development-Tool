@@ -7,7 +7,7 @@ name = "dah-development-tool"
 version = "0.1.0"
 description = "Read-only inspection and translation tools for Destroy All Humans! maps"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["numpy>=1.26", "Pillow>=10"]
 
 [project.scripts]
 dahdev = "dahdev.cli:main"

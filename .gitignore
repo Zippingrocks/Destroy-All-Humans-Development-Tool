@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 build/
 dist/
+out/
 
 # Retail game data and generated reconstruction artifacts are local inputs.
 *.dir

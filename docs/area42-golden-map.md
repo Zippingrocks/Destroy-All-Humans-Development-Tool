@@ -32,6 +32,30 @@ The corrected 2026-10-11 reference extraction establishes:
 The retail pointer graph and executable code support these facts. They are more
 authoritative than the earlier hash-only selection and approximate OBJ export.
 
+The repository's native reader now reconstructs every preserved reference array
+byte-for-byte. It additionally establishes the following read-only dependency
+facts from relocation and resource identity evidence:
+
+- 1,257 material-slot occurrences across the 184 terrain LOD wrappers;
+- the low byte of every segment's preserved flag word selects an in-range slot;
+- every slot resolves to resource type `0x9709513E`;
+- material relocation field `+0x6C` resolves to a 52-byte texture binding;
+- binding field `+0x18` is the name hash of a `0x3BE99284` texture resource;
+- Area 42 terrain uses 91 unique materials and 67 unique bound textures;
+- binding format words 8 and 9 match BC1/DXT1 and BC3/DXT5 respectively for
+  every native width, height, mip count, and payload length.
+
+The pinned retail executable independently supports that traversal. Routine
+`0xF0490` reads the wrapper's `+0xB8` count and indexes its `+0xB4` table;
+routine `0xE67C1` reads binding `+0x18` and requests resource type
+`0x3BE99284`; routine `0xE64F0` uses binding `+0x00` as a format-table index and
+passes `+0x04`, `+0x08`, and `+0x0C` into texture creation. Those fields match
+mip count, width, and height across all terrain bindings. The evidence XBE is
+SHA-256 `b9491b30eaee82af6c805d9b0036ec1119059b0660a0923803ebdb6219fa02eb`.
+
+Four terrain materials have no relocated texture binding. They remain explicit
+in the report rather than receiving a guessed fallback texture.
+
 ## Heightmap limits
 
 The inspection heightmap covers about 67.74% of its 1024 x 1024 raster. It skips
@@ -63,6 +87,11 @@ Accordingly:
 8. **First native-edit gate:** on a disposable game copy, move exactly one
    scenery object, rebuild only the affected package set, and verify its
    placement, collision, streaming, and behavior in game.
+
+The current inspection export does not yet pass the visual gate. Vertex bytes
+`+0x0C..+0x13` behave like UV coordinates and are emitted as a labeled candidate,
+but executable confirmation, addressing-mode recovery, and a same-location
+retail-game comparison are still required.
 
 Creating a new map is not an early acceptance gate. It follows proven resource
 registration, streaming, collision, gameplay setup, and packaging.

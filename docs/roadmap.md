@@ -1,21 +1,37 @@
 # Roadmap
 
-## 0. Evidence baseline — current
+## 0. Evidence baseline — complete
 
 - Pin the DAH1 USA Xbox Area 42 source by size and SHA-256.
 - Preserve corrected LOD0/LOD1 geometry and retail transform evidence.
 - Keep retail, recomp, and research fixtures read-only.
 
-## 1. Lossless DAH1 reader
+## 1. Read-only DAH1 terrain reader — complete for Area 42
 
-- Port container decompression and relocation traversal into the native core.
-- Represent resource identity, type, package, load group, source offset, and raw
+- [x] Port container decompression and relocation traversal into the native core.
+- [x] Represent resource identity, type, package, load group, source offset, and raw
   unknown spans.
-- Reproduce Area 42's 751-record scene chain, 92 terrain placements, and 184
+- [x] Reproduce Area 42's 751-record scene chain, 92 terrain placements, and 184
   ordered geometry buffers from source packages.
-- Compare transformed vertices and topology against the golden reference.
+- [x] Compare every transformed vertex/topology array byte-for-byte against the
+  golden reference.
 
-## 2. Unchanged native save
+## 2. Read-only terrain materials and textures — current
+
+- [x] Resolve each wrapper's relocated material-slot table and prove the segment
+  low byte indexes it for all 1,480 terrain segments.
+- [x] Resolve material binding records to native texture resource identities.
+- [x] Decode the bound BC1/DXT1 and BC3/DXT5 payloads from native dimensions,
+  mip counts, and format words without size guessing.
+- [x] Export one representative native terrain placement with its original
+  geometry, candidate UV channel, and native material assignments.
+- [ ] Confirm the stride-24 `+0x0C..+0x13` UV interpretation in retail executable
+  code and compare the representative section to the same in-game location.
+- [ ] Identify texture addressing, render-state fields, and the high byte of the
+  segment flags before calling the textured view accurate.
+- [ ] Expand the proven inspection view across every placement and both LODs.
+
+## 3. Unchanged native save
 
 - Serialize to a new output directory without editing the scene.
 - Require byte-identical output where the container permits it.
@@ -25,7 +41,7 @@
 
 No mutating editor command is allowed to write packages before this milestone.
 
-## 3. First native edit
+## 4. First native edit
 
 Use a disposable game copy:
 
@@ -39,7 +55,7 @@ Use a disposable game copy:
 This is the decisive proof that the project edits DAH rather than displaying a
 conversion.
 
-## 4. Editor interface evaluation
+## 5. Editor interface evaluation
 
 - Expose the native scene through a stable editor API.
 - Evaluate WorldEdit's viewport, selection, transform tools, and undo/redo.
@@ -47,19 +63,19 @@ conversion.
 - Choose thin adapter, component reuse, or maintained fork only after measuring
   integration coupling and license obligations.
 
-## 5. Broader DAH1 map systems
+## 6. Broader DAH1 map systems
 
-- Materials, textures, objects, and both mesh LODs.
+- Objects and their mesh LODs.
 - Collision, destruction, regions, paths, missions, and streaming.
 - Resource registration and cross-package dependency validation.
 
-## 6. Additional classic builds
+## 7. Additional classic builds
 
 - Give DAH2 and prototype builds independent profiles, evidence, and golden
   fixtures.
 - Share code only where binary evidence proves compatibility.
 
-## 7. New maps
+## 8. New maps
 
 Creating maps from scratch begins only after native editing and packaging are
 reliable. It requires resource registration, streaming, collision, gameplay

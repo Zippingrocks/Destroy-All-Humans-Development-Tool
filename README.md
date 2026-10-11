@@ -32,8 +32,15 @@ are established.
 
 - Source-directory inspection for Zero Engine `.dir` + `.pkg` maps.
 - Exact verification of the DAH1 USA Xbox retail Area 42 source files.
-- Optional verification of the corrected Area 42 LOD/transform reference
-  export.
+- Native container decompression and relocation traversal.
+- Independent reconstruction of all 92 Area 42 terrain placements, 184 LOD
+  geometry buffers, and the 751-record scene chain.
+- Byte-for-byte comparison of every reconstructed geometry/transform array
+  against the corrected reference export.
+- Native terrain segment-to-material-to-texture dependency reconstruction:
+  91 unique materials and 67 bound BC1/BC3 textures.
+- A read-only textured OBJ/MTL inspection export for individual terrain
+  placements, with unresolved UV/render-state claims labeled in its manifest.
 - Explicit support matrix for prototype, DAH1 retail, and DAH2 retail.
 - Architecture and reconstruction acceptance gates.
 - A milestone order that requires unchanged-map preservation before mutation.
@@ -42,8 +49,8 @@ No game files or generated meshes are stored in this repository.
 
 ## Quick start
 
-Python 3.11 or newer is sufficient; the current CLI has no third-party runtime
-dependencies.
+Python 3.11 or newer is sufficient. Install the package to obtain its NumPy and
+Pillow runtime dependencies.
 
 ```powershell
 python -m dahdev profiles
@@ -51,6 +58,14 @@ python -m dahdev inspect "D:\path\to\blocks\sites\area42"
 python -m dahdev verify `
   --source "D:\path\to\blocks\sites\area42" `
   --reference "D:\path\to\area42_heightmap_2026-10-11\lod_transform_verified_2026-10-11"
+python -m dahdev terrain-validate `
+  --source "D:\path\to\blocks\sites\area42" `
+  --reference "D:\path\to\lod_transform_verified_2026-10-11" `
+  --out ".\out\area42-validation"
+python -m dahdev terrain-section-export `
+  --source "D:\path\to\blocks\sites\area42" `
+  --placement 45 --lod 0 `
+  --out ".\out\area42-tile045-lod0"
 python -m unittest discover -s tests -v
 ```
 
