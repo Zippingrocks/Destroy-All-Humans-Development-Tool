@@ -84,7 +84,7 @@ class TerrainMaterialEvidenceTests(unittest.TestCase):
         state = terrain_segment_render_state(_material(0x80000, 7, shader=4), 0)
         self.assertEqual(state["evidence_status"], "unresolved-special-path")
         self.assertEqual(len(state["unresolved"]), 3)
-        self.assertEqual(state["vertex_rgb_scale"], 1)
+        self.assertEqual(state["vertex_rgb_scale"], 2)
         with self.assertRaises(ValueError):
             terrain_segment_render_state(_material(), 65536)
 
@@ -92,7 +92,7 @@ class TerrainMaterialEvidenceTests(unittest.TestCase):
     def test_retail_instruction_and_shader_spans(self):
         report = verify_material_executable_evidence(os.environ["DAHDEV_RETAIL_XBE"])
         self.assertEqual(report["status"], "verified")
-        self.assertEqual(len(report["checks"]), 34)
+        self.assertEqual(len(report["checks"]), 36)
 
     @unittest.skipUnless(os.environ.get("DAHDEV_AREA42_SOURCE"), "retail fixture not configured")
     def test_independent_native_terrain_layer_coverage(self):
@@ -198,8 +198,16 @@ class ActorMaterialEvidenceTests(unittest.TestCase):
         state = actor_material_render_state(_material(flags=0x14000, shader=3))
         self.assertEqual(state["evidence_status"], "retail-code-verified")
         self.assertFalse(state["unresolved"])
-        self.assertTrue(any("pixel shader 3" in value for value in state["visual_unresolved"]))
-        self.assertNotIn("vertex_rgb_scale", state)
+        self.assertTrue(any("secondary reflection" in value for value in state["visual_unresolved"]))
+        self.assertEqual(state["native_base_rgb_scale"], 2)
+        self.assertEqual(state["native_base_alpha"], "texture0.a * vertex.a")
+        shader4 = actor_material_render_state(_material(shader=4))
+        self.assertEqual(shader4["native_base_rgb_scale"], 2)
+        self.assertEqual(shader4["native_base_alpha"], "vertex.a")
+        special = native_material_evidence(_material(shader=4), "actor")
+        self.assertEqual(special["basic_pixel_rgb"], "clamp(2 * texture0.rgb * vertex.rgb, 0, 1)")
+        self.assertEqual(special["basic_pixel_alpha"], "vertex.a")
+        self.assertIn("texture0.a", special["secondary_pixel_term"])
         evidence = native_material_evidence(_material(opacity=.5), "actor")
         self.assertEqual(evidence["effective_uv_transform"], evidence["raw_uv_transform"])
         self.assertEqual(evidence["uv_transform_status"], "retail-initial-material-load-preserved")

@@ -1408,14 +1408,14 @@ def export_area42_editor_scene(
             } for _, actor in sorted(human_archetypes.items())
         ],
         "unknowns": [
-            "Terrain layer, alpha, RGB scale and blend equations carry executable evidence; special shader paths and dynamic UV scaling remain incomplete.",
+            "Terrain layer, alpha, RGB scale and blend equations carry executable evidence. Pixel shaders 3/4 preserve their decoded RGB2 base and exact alpha behavior; their additive reflection term still needs generated t1 coordinates and the live c5 constant.",
             "Viewport orientation and remaining render states still require a same-location retail comparison.",
             "Native double-sided flags are preserved; the preview disables culling until front-face parity is verified.",
             "Skinned and segmented actors show their authored reference pose; runtime animation, component visibility and held attachments are not applied.",
             "Scatter wind and distance fade are preserved but not simulated. The viewport depth-sorts translucent instances, not individual triangles; exact retail draw ordering remains unverified.",
             "Native landing visuals use authored region centers; runtime collision projection, activation and animation are not applied.",
             "Authored placements and script registrations do not imply simultaneous runtime activation.",
-            "First sky visual initial draw and authored sun constants are verified; second sky visual, animated UVs, live camera light directions, per-object effects, fog integration and runtime shadows remain unresolved.",
+            "First sky visual initial draw, authored sun constants and the configured alien camera-plane fog endpoint are previewed; UFO profile switching, second sky visual, animated UVs, live camera light directions, per-object effects and runtime shadows remain unresolved.",
             "Collision, mission execution, destruction-state editing, streaming simulation and native writes are outside schema v4.",
         ],
     }

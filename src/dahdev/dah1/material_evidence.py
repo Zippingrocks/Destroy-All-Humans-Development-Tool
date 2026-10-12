@@ -21,6 +21,24 @@ _IDENTITY_UV = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 _INITIAL_RAW_UV_KINDS = frozenset({"actor", "static-world-object", "human-reference-pose", "sky"})
 
 
+def _pixel_shader_base(shader: int | None) -> tuple[str | None, str | None, float | None]:
+    """Return the independently decoded base term before any secondary stage.
+
+    Shader 3/4 still need the generated t1 coordinate and live c5 constant for
+    their additive reflection term.  Their base term and alpha behavior are
+    nevertheless explicit in the pinned 0xF0-byte NV2A definitions.
+    """
+    if shader == 0:
+        return "clamp(2 * texture0.rgb * vertex.rgb, 0, 1)", "texture0.a * vertex.a", 2.0
+    if shader == 1:
+        return "clamp(2 * vertex.rgb, 0, 1)", "vertex.a", 2.0
+    if shader == 3:
+        return "clamp(2 * texture0.rgb * vertex.rgb, 0, 1)", "texture0.a * vertex.a", 2.0
+    if shader == 4:
+        return "clamp(2 * texture0.rgb * vertex.rgb, 0, 1)", "vertex.a", 2.0
+    return None, None, None
+
+
 def native_sampler_state(material: NativeMaterial) -> dict[str, object]:
     """Stage-0 sampler after texture bind followed by material setup.
 
@@ -78,8 +96,13 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
         unresolved.append("material animation, script edits and shared-material runtime changes are not simulated")
     if kind == "terrain" and material.render_flags & 0x800000:
         unresolved.append("runtime terrain texture-scale callback changes are not simulated")
-    if shader not in (0, 1):
-        unresolved.append("pixel shader is outside the verified basic shader 0/1 subset")
+    base_rgb, base_alpha, base_scale = _pixel_shader_base(shader)
+    if shader in (3, 4):
+        unresolved.append(
+            "secondary reflection term needs generated t1 coordinates and the live c5 constant"
+        )
+    elif base_rgb is None:
+        unresolved.append("pixel shader base path is not decoded")
     return {
         "raw_uv_transform": list(matrix),
         "effective_uv_transform": list(_IDENTITY_UV) if kind == "terrain" else list(matrix) if initial_raw_uv else None,
@@ -92,14 +115,15 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
         "native_diffuse_color": list(struct.unpack_from("<3f", raw, 0x50)),
         "native_additive_color": list(struct.unpack_from("<3f", raw, 0x5C)),
         "native_opacity": struct.unpack_from("<f", raw, 0x68)[0],
-        "basic_pixel_rgb": "clamp(2 * texture.rgb * vertex.rgb, 0, 1)" if shader == 0 else (
-            "clamp(2 * vertex.rgb, 0, 1)" if shader == 1 else None
+        "basic_pixel_rgb": base_rgb,
+        "basic_pixel_alpha": base_alpha,
+        "native_base_rgb_scale": base_scale,
+        "basic_pixel_material_color_multiply": False if base_rgb is not None else None,
+        "basic_pixel_material_opacity_multiply": False if base_rgb is not None else None,
+        "secondary_pixel_term": (
+            "texture1.rgb * c5.a * material_c0.a" if shader == 3 else
+            "texture1.rgb * c5.a * material_c0.a * texture0.a" if shader == 4 else None
         ),
-        "basic_pixel_alpha": "texture.a * vertex.a" if shader == 0 else (
-            "vertex.a" if shader == 1 else None
-        ),
-        "basic_pixel_material_color_multiply": False if shader in (0, 1) else None,
-        "basic_pixel_material_opacity_multiply": False if shader in (0, 1) else None,
         "rigid_vertex_color_evidence": None if kind == "terrain" else {
             "scope": "default rigid vertex shader 0x256138; not all actor/skin shader variants",
             "light": "max(dot(v1.xyz, c46.xyz), 0) * c47 + c48",
@@ -120,7 +144,7 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
             "runtime_uv_animation": "0xCEB65 / 0xCED22 -> 0xE5970 recomputes +0x20 from animated +0x08..+0x18",
             "draw_tint_constants": "0xEB20B..0xEB273 uploads c20/c19; null +0x14 uses 1/0 respectively",
             "terrain_vertex_shader": "0x251E20: DP4(v1,c78/c79); MOV(v2.xyzw,oD0)",
-            "pixel_shaders": "0=0x251098; 1=0x250FA8; shader table setup at 0xE5870",
+            "pixel_shaders": "0=0x251098; 1=0x250FA8; 3=0x251278; 4=0x251368; shader table setup at 0xE5870",
             "rigid_vertex_shader": "0x256138 registered at 0xEEE60 and selected at 0xEF756; c76=(diffuse,0), c77=(additive,opacity) at 0xE5D2A",
         },
         "unresolved": unresolved,
@@ -161,8 +185,11 @@ def terrain_segment_render_state(material: NativeMaterial, raw_flags: int) -> di
         unresolved.append("special pass flags 0x800/0x80000 require further runtime state reconstruction")
     if binding_mode not in (None, 0, 1, 2, 3):
         unresolved.append(f"unknown native texture alpha mode {binding_mode}")
-    if shader not in (0, 1):
-        unresolved.append(f"pixel shader {shader} is outside the verified basic subset")
+    _, _, base_scale = _pixel_shader_base(shader)
+    if shader in (3, 4):
+        unresolved.append(f"pixel shader {shader} secondary reflection term is not reconstructed")
+    elif base_scale is None:
+        unresolved.append(f"pixel shader {shader} base path is not decoded")
     return {
         "terrain_layer": layer,
         "native_segment_flags": raw_flags,
@@ -175,7 +202,7 @@ def terrain_segment_render_state(material: NativeMaterial, raw_flags: int) -> di
         "depth_write": not force_blend,
         "depth_compare": "less_equal",
         "double_sided": bool(flags & 0x4000),
-        "vertex_rgb_scale": 2.0 if shader in (0, 1) else 1.0,
+        "vertex_rgb_scale": base_scale if base_scale is not None else 1.0,
         "vertex_alpha": "native",
         "shade_faces": False,
         "native_pixel_shader_index": shader,
@@ -217,6 +244,7 @@ def actor_material_render_state(
         raise ValueError("texture binding lacks the native alpha mode")
     binding_mode = struct.unpack_from("<I", material.binding.raw_bytes, 0x10)[0] if material.binding else None
     shader = struct.unpack_from("<I", material.raw_bytes, 0x84)[0]
+    _, base_alpha, base_scale = _pixel_shader_base(shader)
     native_blended = bool((binding_mode == 3 and not flags & 0x40000) or flags & 0x700 or opacity < 1.0)
     draw_mode = default_draw_mode
     if flags & 0x80000:
@@ -271,6 +299,8 @@ def actor_material_render_state(
         "native_default_draw_mode": default_draw_mode,
         "native_draw_opacity": float(draw_opacity),
         "native_pixel_shader_index": shader,
+        "native_base_rgb_scale": base_scale,
+        "native_base_alpha": base_alpha,
         "native_texture_alpha_mode": binding_mode,
         "native_opacity": opacity,
         "material_opacity": opacity,
@@ -282,7 +312,11 @@ def actor_material_render_state(
             "native actor lighting, tint/fade constants and shader-dependent vertex colors are not reconstructed",
             "material animation and later UV updates are not simulated; initial actor UVs retain the authored matrix",
             "runtime shadow/fog/reflection passes and draw-opacity changes are not simulated",
-        ] + ([f"pixel shader {shader} is outside the verified basic 0/1 subset"] if shader not in (0, 1) else []),
+        ] + (
+            [f"pixel shader {shader} secondary reflection term is not reconstructed"]
+            if shader in (3, 4) else
+            ([f"pixel shader {shader} base path is not decoded"] if base_scale is None else [])
+        ),
     }
 
 
@@ -297,6 +331,8 @@ _SPANS = {
     "terrain_shader": (0x251E20, 164, "6978eb1c96ad5c4cc4adbe72e6bad5df7c2969637d2c18a761c253e075d76776"),
     "textured_pixel_shader": (0x251098, 240, "16370030f3ede0565f3f8b1f58f2564da2c74469fc344200888b3dd9e53a7e81"),
     "untextured_pixel_shader": (0x250FA8, 240, "94c5775954e85329e0ea718c6a2b6693f840820b43c9d3a053e3619fae53bdec"),
+    "reflection_pixel_shader_3": (0x251278, 240, "ea7b6781ac594b5c988a38f1ff092fff6e841afaa1323e25f5212d307515dfe9"),
+    "reflection_pixel_shader_4": (0x251368, 240, "a9f15d9b56381b5a893b5ca1364d8ab0ba62aca668d3813af924f60cd39149b2"),
     "material_gpu_constants": (0xE5D2A, 181, "abe62e56697ecf5eaf84b0852a62691c67ad7e39b6ca0f21336626bae3a05c48"),
     "terrain_initial_uv_reset": (0xE5790, 36, "ab1fb4f71238008932fc721e33eb519f67bf0249d5300eab3b46716c0ed1ceeb"),
     "terrain_material_walk": (0xE52C0, 213, "d3a32eb5a7d93f60fabafe7faa14b6884d919f272622755bb08b0b60d68e9a4e"),

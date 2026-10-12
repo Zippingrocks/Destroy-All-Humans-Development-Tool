@@ -29,7 +29,7 @@ and provenance survive the interchange.
   script registrations, objectives, population definitions, raw native identities, load groups,
   source offsets, hashes, and unknown records.
 - **Preserved but not yet simulated:** mission activation, actor animation and attachments,
-  scatter wind/fade, landing collision projection, second sky, dynamic UV behavior, fog,
+  scatter wind/fade, landing collision projection, second sky, dynamic UV behavior, UFO fog-profile switching,
   reflections, local lights, shadows, and mission-driven effects.
 - **Not yet an editable native system:** collision, navigation and traffic networks,
   destruction graphs/states, runtime streaming, audio emitters/music regions, camera/cinematic
@@ -59,7 +59,7 @@ and provenance survive the interchange.
 1. Decode collision ownership and shapes and cross-link them to native placements.
 2. Decode navigation, pedestrian, traffic, patrol, and camera path networks.
 3. Decode destruction stages, damage volumes, fixture state changes, debris, and physics links.
-4. Complete retail render-state parity: special shader paths, animated UVs, fog, reflections,
+4. Complete retail render-state parity: shader 3/4 secondary reflection terms, animated UVs, UFO fog switching,
    local lights, effects, shadows, and same-camera comparisons.
 5. Model mission-layer activation without flattening mutually exclusive states into one scene.
 6. Turn the byte-identical passthrough baseline into semantic reserialization without losing
