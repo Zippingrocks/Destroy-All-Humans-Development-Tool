@@ -166,3 +166,131 @@ TrenchBroom entity for a Pandemic resource whose runtime contract is different.
   navigation, roads, streaming, and load-group behavior.
 - Prove an unchanged native save before enabling package mutation.
 
+## Environment: next preview milestone
+
+The following is read-only resource and executable evidence, not implemented
+schema-v4 atmosphere support or proof of game-exact rendering. All addresses are
+for the pinned DAH1 US Xbox retail executable; resident offsets refer to the
+decompressed Area 42 load group 0. The existing fog/sky sibling nodes are not
+ordinary scenery placements.
+
+### Native ownership and authored values
+
+World record `0x7FF9A4` (type `0x59CE7BCB`, name `0xB31C6654`) has these
+relocated fields. The loader at `0xE5670` follows the same references:
+
+| World field | Target | Role |
+| --- | --- | --- |
+| `+0x0C` | node `0x7FFB14` -> payload `0x8D1324` | `sun_shadow` |
+| `+0x10` | node `0x7FFA94` -> payload `0x8D14DC` | `sun_static` |
+| `+0x14` | node `0x7FFAD4` -> payload `0x8D1400` | `sun_dynamic` |
+| `+0x18` | payload `0x8D1680`, type/name `0x6FF6291D` | fog |
+| `+0x1C` | controller `0x8D15B8`, type/name `0x958378DE` | sky |
+
+These payloads are not independently indexed directory resources. Bounds and
+relocations must still be checked. The `Fog` and `skybox` sibling nodes have no
+relocated visual at `+0x14`; dropping them as empty objects misses World's direct
+environment ownership. The three sun payloads have type `0x438B6A74`;
+`0xE9800` registers its factory and `0xE4DB0` copies payload `+0xB4..+0xD8`
+into runtime `+0x1C..+0x40`. Preserve the separate roles and raw fields: the
+diffuse/ambient/intensity consumer semantics have not yet been fully traced.
+
+Fog loader `0xF3630` establishes the following fields:
+
+| Payload field | Area 42 value | Runtime field |
+| --- | --- | --- |
+| `+0xE0..+0xE8` | RGB `(0.568627, 0.541176, 0.478431)` | `+0x1C..+0x24` |
+| `+0xB4` | extent `150` | `+0x90` |
+| `+0xB8..+0xC0` | position `(0,-150,0)` | `+0x28..+0x30` |
+| `+0xC4..+0xD0` | quaternion `(-0.7071067,-0,-0,0.7071068)` | `+0x34..+0x40` |
+| `+0xD4..+0xDC` | scale `(1,1,1)` | `+0x44..+0x4C` |
+
+The color meaning is independently supported by the registered
+`graphics.fog.SetColor` function at `0xE3CB0`, which writes the same runtime RGB
+fields. The full 236-byte fog payload has SHA-256
+`6c95a62d902b582ffc7672c6489ebe5206c8b77b43211d47917a8ebdbb24bb99`.
+
+### Fog is a transformed linear plane, not radial distance
+
+`0xF3710` builds the fog matrix from its quaternion, position and scale,
+multiplies its Z basis by the extent, and composes it with the supplied object's
+matrix. `0xF55E0` then computes a per-draw plane in the rendered object's local
+space. With row-vector notation, `T = fog_matrix * inverse(object_matrix)`,
+`z = T[2,0:3]`, and `o = T[3,0:3]`, the calculation is:
+
+`n = z / dot(z,z); c56 = (n.x,n.y,n.z,-dot(o,n))`
+
+The helper at `0xD4EA0` returns **squared** length; there is no square root in
+this calculation. Terrain calls it at `0xECB15`, `0xEB1D2` uploads constant 56,
+and the native terrain vertex program writes `oFog = dot(position,c56)`.
+This is an affine plane coordinate, not `length(position-camera_position)`.
+With the authored fog matrix and identity parent/object transforms, points at
+Y `0,-75,-150` produce approximately `1,0.5,0` respectively. This numerical
+check is not a claim that gameplay keeps that identity basis or authored extent.
+
+The normal renderer initialization sets the D3D fog mode field to zero
+(`0xE620A`). For that mode, the pinned D3D routine `0x1E2ACF..0x1E2B99` emits
+NV2A LINEAR (`0x2601`) and parameters `(1,1,0)`. The linear hardware equation
+`parameter0 + oFog * parameter1 - 1` therefore passes the plane coordinate
+through. Do not apply a second generic distance-fog curve. Exact per-pass
+combiner behavior, camera attachment/update selection and framebuffer parity
+remain separate validation gates.
+
+### Camera and script overrides
+
+Area 42's `input/blocks/sites/area42/site_localsettings.lua` (Lua resource
+index 37, load group 1, offset `190916`, size `421`) overrides the shared
+defaults with:
+
+| Camera configuration | Fog start | Fog end | Far plane |
+| --- | ---: | ---: | ---: |
+| Alien/on foot | 0 | 250 | 1000 |
+| UFO | 60 | 250 | 250 |
+
+The shared `site_camera.lua` resource (load group 1, offset `908868`, size
+`1488`) maps these values in `siteCamera.Init` to `player.SetParam` keys
+`crFogStart`, `crFogEnd`, `shipFogStart`, `shipFogEnd`, `crCamFarDist` and
+`shipCamFarDist`. The independently identified `graphics.fog.SetRange` at
+`0xE3D00` stores position `(0,-end,0)` and extent `end-start`; closing the
+player-camera dispatch and update chain is still required before treating the
+script values as an unconditional editor fog setting. Cinematics and script
+changes can require a different state.
+
+Area 42 ignition also calls `environment.SetParam(0,"LightLevel",1)` at Lua
+PCs 438-443. The XBE dispatcher at `0x5A6A0` recognizes hash `0x53C40C0E`
+and stores that state's light level. This is evidence of an additional runtime
+control, not permission to multiply every preview material by a guessed light.
+
+### Sky geometry has a dedicated draw contract
+
+The sky controller loader `0xF38C0` resolves payload `+0xB4/+0xB8` into
+runtime `+0x1C/+0x2C`. Both targets are native static visuals (`0x9805A0A6`):
+
+| Visual name / resident offset | Mesh name | Geometry |
+| --- | --- | --- |
+| `0x741C438A` / `0x7E0378` | `0x7AD90718` | 106 vertices, 128 triangles, two segments/materials |
+| `0x0C9DF14A` / `0x7E0610` | `0xFC7BD8FF` | four vertices, two triangles, one segment/material |
+
+These counts were independently decoded through the native mesh/material
+reader, not inferred from a picture. The sky controller's vtable at `0x234890`
+selects `0xE7150` for drawing. That routine copies the view matrix, zeroes its
+translation (`0xE720B..0xE721D`), iterates the first visual's mesh segments and
+material slots (`0xE7372..0xE74DE`), then conditionally draws the second visual
+through `0xEF890` at `0xE77E6` with a separately constructed transform. Its
+placement depends on runtime camera values and the controller's vector; it is
+not a second ordinary static placement. Exact second-pass scaling, occlusion,
+material state and compositing remain to be validated before preview support.
+
+The next test should pin this complete environment-reference chain, fog color,
+camera overrides, plane equation and both sky dependencies, then compare one
+matched retail camera in both alien and UFO modes. Extend the neutral scene
+only after those checks; fog, sky and light decoding must preserve unresolved
+fields rather than invent an atmosphere. Useful executable span SHA-256 pins:
+
+| Start / byte count | Evidence | SHA-256 |
+| --- | --- | --- |
+| `0xF55E0` / 288 | fog plane calculation | `dfe0935d7f14f4ee2246ebc842dc971a192b3d5ff92e63f9c2af40873389657d` |
+| `0xF3710` / 240 | fog matrix update | `c3408be9b72303f5caaa33466aba6bbc832928bbcaf0c4b7771d20dd4762afa5` |
+| `0xF38C0` / 82 | sky dependency loader | `f494c062bf5b530919890e54afb036231562ff830aa4b77e0bb974115dfb4e80` |
+| `0xE7150` / 1724 | dedicated sky draw | `392939c5bcc47a72261132779bfd011d786c8c04d24ddf9741aeffa04af36d61` |
+
