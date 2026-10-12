@@ -16,7 +16,7 @@
 - [x] Compare every transformed vertex/topology array byte-for-byte against the
   golden reference.
 
-## 2. Read-only terrain materials and textures — current
+## 2. Read-only terrain materials and textures — structurally complete
 
 - [x] Resolve each wrapper's relocated material-slot table and prove the segment
   low byte indexes it for all 1,480 terrain segments.
@@ -24,12 +24,16 @@
 - [x] Decode the bound BC1/DXT1 and BC3/DXT5 payloads from native dimensions,
   mip counts, and format words without size guessing.
 - [x] Export one representative native terrain placement with its original
-  geometry, candidate UV channel, and native material assignments.
-- [ ] Confirm the stride-24 `+0x0C..+0x13` UV interpretation in retail executable
-  code and compare the representative section to the same in-game location.
-- [ ] Identify texture addressing, render-state fields, and the high byte of the
-  segment flags before calling the textured view accurate.
-- [ ] Expand the proven inspection view across every placement and both LODs.
+  geometry, native UV channel, and native material assignments.
+- [x] Confirm stride 24 and the `+0x0C..+0x13` float2 UV interpretation in the
+  pinned retail executable.
+- [x] Recover per-axis wrap/clamp from material `+0x7C` flags and reproduce it in
+  CryptoEditor.
+- [x] Expand the inspection view across every placement and both LODs.
+- [ ] Compare a representative section to the same in-game location and resolve
+  any remaining orientation or render-state differences.
+- [ ] Identify the high byte of the segment flags and other preserved material
+  flag bits before claiming complete render-state semantics.
 
 ## 3. CryptoEditor read-only shell — current
 
@@ -37,7 +41,7 @@
   repository, with upstream attribution and a documented update strategy.
 - [x] Define a versioned, read-only `.dahscene` boundary between CryptoEditor
   and `dahdev`, with payload hashes, provenance, and explicit unknown fields.
-- [ ] Load Area 42's native LOD0/LOD1 reference meshes and material assignments
+- [x] Load Area 42's native LOD0/LOD1 reference meshes and material assignments
   without converting them into brushes or a heightfield.
 - [ ] Add explicit DAH terrain, reference mesh, object, and unknown-data node types.
 - [ ] Keep brush construction available for new geometry without implying that a

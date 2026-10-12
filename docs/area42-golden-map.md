@@ -53,6 +53,21 @@ passes `+0x04`, `+0x08`, and `+0x0C` into texture creation. Those fields match
 mip count, width, and height across all terrain bindings. The evidence XBE is
 SHA-256 `b9491b30eaee82af6c805d9b0036ec1119059b0660a0923803ebdb6219fa02eb`.
 
+The reproducible `dahdev executable-evidence` probe additionally verifies:
+
+- the native terrain draw path writes stream-0 stride `0x18` (24 bytes);
+- the terrain texture-scale path applies a float2 affine transform and terrain
+  vertex construction stores that pair at byte `+0x0C`, confirming the native
+  `+0x0C..+0x13` field as UV;
+- material field `+0x7C` bit `0x1000` selects U clamp and bit `0x2000` selects
+  V clamp; each unset axis wraps;
+- the engine applies those address modes to texture stages 0, 2, and 3, using
+  native values 1 for wrap and 3 for clamp.
+
+Across the 91 unique Area 42 terrain materials, 69 wrap both axes, one clamps U
+only, four clamp V only, and 17 clamp both axes. Other material flag bits remain
+preserved without assigned semantics.
+
 Four terrain materials have no relocated texture binding. They remain explicit
 in the report rather than receiving a guessed fallback texture.
 
@@ -88,10 +103,10 @@ Accordingly:
    scenery object, rebuild only the affected package set, and verify its
    placement, collision, streaming, and behavior in game.
 
-The current inspection export does not yet pass the visual gate. Vertex bytes
-`+0x0C..+0x13` behave like UV coordinates and are emitted as a labeled candidate,
-but executable confirmation, addressing-mode recovery, and a same-location
-retail-game comparison are still required.
+The current inspection export does not yet pass the visual gate. UV location and
+per-axis wrap/clamp are now executable-verified and CryptoEditor consumes them,
+but a same-location retail-game comparison is still required to validate image
+orientation and the remaining render states.
 
 Creating a new map is not an early acceptance gate. It follows proven resource
 registration, streaming, collision, gameplay setup, and packaging.

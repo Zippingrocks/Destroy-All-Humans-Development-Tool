@@ -25,10 +25,15 @@ records and flags, placement transforms, resource identity, load group,
 package offsets, and LOD relationships. Decoded 32-bit triangle lists and PNGs
 are derived views included for efficient display and validation.
 
-The manifest labels the candidate UV channel and unresolved vertex tail,
-segment flag high byte, texture addressing, and render state. It does not
-pretend that these fields are understood. Collision, scenery, missions,
-destruction, and streaming are outside version 1.
+The manifest identifies the executable-verified UV channel and per-material U/V
+wrap-or-clamp modes. It continues to label the packed vertex tail, segment flag
+high byte, other material flag bits, and remaining render state as unresolved.
+Collision, scenery, missions, destruction, and streaming are outside version 1.
+
+The sampler object is optional for compatibility with earlier v1 exports. When
+present, consumers require `status: "verified"` and apply `address_u` and
+`address_v` independently. Older candidate-UV v1 exports remain readable, but
+new exports label the same byte layout as verified.
 
 ## Area 42 acceptance gate
 

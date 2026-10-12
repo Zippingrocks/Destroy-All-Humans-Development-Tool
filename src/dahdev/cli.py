@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .dah1.container import BlockReader
+from .dah1.executable_evidence import verify_executable_evidence
 from .dah1.materials import export_textured_section, write_material_outputs
 from .dah1.terrain import read_terrain_scene, write_validation_outputs
 from .editor_scene import export_area42_editor_scene
@@ -84,6 +85,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="New or empty output directory ending in .dahscene.",
     )
     editor_scene.add_argument("--json", action="store_true", help="Emit the export report as JSON.")
+
+    executable = subparsers.add_parser(
+        "executable-evidence",
+        help="Verify pinned DAH1 retail terrain layout and sampler evidence in default.xbe.",
+    )
+    executable.add_argument("--xbe", required=True, help="Pinned DAH1 US Xbox retail default.xbe.")
+    executable.add_argument("--json", action="store_true", help="Emit the evidence report as JSON.")
 
     return parser
 
@@ -240,6 +248,27 @@ def _editor_scene_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _executable_evidence(args: argparse.Namespace) -> int:
+    report = verify_executable_evidence(args.xbe)
+    if args.json:
+        _print_json(report)
+    else:
+        layout = report["terrain_vertex_layout"]
+        sampler = report["terrain_material_addressing"]
+        print(f"Build SHA-256:       {report['sha256']}")
+        print(f"Evidence checks:     {len(report['checks'])} verified")
+        print(
+            "Terrain vertices:    "
+            f"stride {layout['stride']}, UV float2 at +0x{layout['uv_offset']:02X}"
+        )
+        print(
+            "Material addressing: "
+            f"U clamp {sampler['u_clamp_mask']}, V clamp {sampler['v_clamp_mask']}; "
+            "unset axes wrap"
+        )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -256,6 +285,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _terrain_section_export(args)
         if args.command == "editor-scene-export":
             return _editor_scene_export(args)
+        if args.command == "executable-evidence":
+            return _executable_evidence(args)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         parser.exit(2, f"error: {error}\n")
     parser.error(f"Unknown command: {args.command}")

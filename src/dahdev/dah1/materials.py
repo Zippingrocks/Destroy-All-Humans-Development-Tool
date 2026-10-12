@@ -42,8 +42,17 @@ class TextureBinding:
 class NativeMaterial:
     resource: ResourceRecord
     raw_bytes: bytes
+    render_flags: int
     binding_pointer_field: int
     binding: TextureBinding | None
+
+    @property
+    def address_u(self) -> str:
+        return "clamp" if self.render_flags & 0x1000 else "wrap"
+
+    @property
+    def address_v(self) -> str:
+        return "clamp" if self.render_flags & 0x2000 else "wrap"
 
 
 @dataclass(frozen=True)
@@ -82,17 +91,18 @@ def bc3_mip_chain_size(width: int, height: int, levels: int) -> int:
 def decode_material(reader: BlockReader, resource: ResourceRecord) -> NativeMaterial:
     if resource.type_hash != MATERIAL_TYPE:
         raise ValueError(f"resource 0x{resource.name_hash:08X} is not a material")
-    if resource.size < 112:
-        raise ValueError("material record is too short for its verified binding field")
+    if resource.size < 128:
+        raise ValueError("material record is too short for its verified fields")
 
     group = reader.load_group(resource.load_group)
     raw = group.data[resource.offset : resource.offset + resource.size]
+    render_flags = struct.unpack_from("<I", raw, 0x7C)[0]
     pointer_field = resource.offset + 108
     binding_offset = group.relocations.pointers.get(pointer_field)
     if binding_offset is None:
         if raw[108:112] != bytes(4):
             raise ValueError("material binding field is non-zero but has no relocation")
-        return NativeMaterial(resource, raw, pointer_field, None)
+        return NativeMaterial(resource, raw, render_flags, pointer_field, None)
 
     if binding_offset + 52 > group.resource_limit:
         raise ValueError("material texture binding extends outside resource data")
@@ -122,6 +132,7 @@ def decode_material(reader: BlockReader, resource: ResourceRecord) -> NativeMate
     return NativeMaterial(
         resource=resource,
         raw_bytes=raw,
+        render_flags=render_flags,
         binding_pointer_field=pointer_field,
         binding=TextureBinding(
             offset=binding_offset,
@@ -343,6 +354,9 @@ def material_dependency_report(scene: TerrainScene) -> dict[str, object]:
                 "material_hash": f"0x{name_hash:08X}",
                 "resource_offset": f"0x{material.resource.offset:X}",
                 "resource_size": material.resource.size,
+                "render_flags": f"0x{material.render_flags:08X}",
+                "address_u": material.address_u,
+                "address_v": material.address_v,
                 "binding_pointer_field": f"0x{material.binding_pointer_field:X}",
                 "binding_offset": f"0x{binding.offset:X}" if binding else None,
                 "binding_raw_hex": binding.raw_bytes.hex() if binding else None,
@@ -386,6 +400,10 @@ def material_dependency_report(scene: TerrainScene) -> dict[str, object]:
                     "uses binding +0x00 as format-table index and +0x04/+0x08/+0x0C "
                     "as creation arguments matching mip count, width, and height"
                 ),
+                "material_gpu_setup_0xE5C00": (
+                    "reads material +0x7C: bit 0x1000 selects U clamp and bit "
+                    "0x2000 selects V clamp; unset selects wrap for stages 0, 2, and 3"
+                ),
             },
         },
         "counts": {
@@ -402,7 +420,7 @@ def material_dependency_report(scene: TerrainScene) -> dict[str, object]:
         "terrain_lods": lod_records,
         "remaining_unknowns": [
             "The high byte of terrain segment raw_flags is preserved without semantics.",
-            "Texture addressing and render-state fields are not yet identified.",
+            "Material flags other than 0x1000 and 0x2000 remain preserved without semantics.",
         ],
     }
 
@@ -448,7 +466,7 @@ def export_textured_section(
 
     geometry = lod.geometry
     world = transform_points(geometry.local_positions, placement.matrix)
-    candidate_uv = np.ndarray(
+    native_uv = np.ndarray(
         (len(geometry.vertex_bytes), 2),
         dtype="<f4",
         buffer=geometry.vertex_bytes,
@@ -475,7 +493,7 @@ def export_textured_section(
     obj_lines.extend(f"v {x:.9g} {y:.9g} {z:.9g}" for x, y, z in world)
     # Wavefront's V origin is conventionally bottom-left; native BC rows decode
     # top-down, so this is the only coordinate conversion in the inspection view.
-    obj_lines.extend(f"vt {u:.9g} {1.0 - v:.9g}" for u, v in candidate_uv)
+    obj_lines.extend(f"vt {u:.9g} {1.0 - v:.9g}" for u, v in native_uv)
     for segment in geometry.segments:
         slot_index = segment.raw_flags & 0xFF
         obj_lines.append(f"usemtl {material_names[slot_index]}")
@@ -498,14 +516,18 @@ def export_textured_section(
         "material_slots": len(slots),
         "provenance": {
             "positions": "native stride-24 vertex bytes +0x00..+0x0B, retail transform",
-            "uv_candidate": "native stride-24 vertex bytes +0x0C..+0x13",
+            "uv": "verified native stride-24 vertex bytes +0x0C..+0x13",
             "material_assignment": "segment raw_flags low byte -> relocated wrapper slot",
             "textures": "material +0x6C relocation -> binding +0x18 hash -> texture resource",
+            "texture_addressing": (
+                "material +0x7C flags: 0x1000 clamps U and 0x2000 clamps V; "
+                "unset axes wrap"
+            ),
         },
         "limitations": [
-            "The UV channel location is structurally compelling but still awaits executable confirmation and same-location retail-game comparison.",
+            "A same-location retail-game comparison is still required to validate viewport orientation and remaining render states.",
             "OBJ is a read-only inspection projection, not an authoritative DAH representation.",
-            "Texture addressing and the segment flag high byte remain unresolved.",
+            "The segment flag high byte remains unresolved.",
         ],
     }
     (destination / f"{stem}_manifest.json").write_text(

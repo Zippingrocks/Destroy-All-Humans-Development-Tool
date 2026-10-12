@@ -213,6 +213,16 @@ def _material_entry(material: NativeMaterial) -> dict[str, object]:
         "id": f"material:{material.resource.name_hash:08x}",
         "resource": _resource(material.resource),
         "raw_sha256": _sha256(material.raw_bytes),
+        "render_flags": material.render_flags,
+        "sampler": {
+            "address_u": material.address_u,
+            "address_v": material.address_v,
+            "status": "verified",
+            "evidence": (
+                "DAH1 US Xbox retail material setup at 0xE5C00: +0x7C bit "
+                "0x1000 clamps U and bit 0x2000 clamps V; unset axes wrap"
+            ),
+        },
         "binding_pointer_field": material.binding_pointer_field,
         "binding": (
             {
@@ -297,7 +307,7 @@ def export_area42_editor_scene(
                     "uv": {
                         "offset": 12,
                         "format": "float32x2-little-endian",
-                        "status": "candidate",
+                        "status": "verified",
                     },
                     "unknown_tail": {"offset": 20, "length": 4},
                 },
@@ -508,10 +518,10 @@ def export_area42_editor_scene(
         "textures": texture_entries,
         "placements": placements,
         "unknowns": [
-            "Vertex bytes +0x0C..+0x13 remain a labeled UV candidate.",
             "Vertex bytes +0x14..+0x17 are preserved without assigned semantics.",
             "The high byte of terrain segment raw_flags is preserved without assigned semantics.",
-            "Texture addressing and render-state fields are unresolved.",
+            "Material flags other than verified U/V clamp bits are preserved without assigned semantics.",
+            "Viewport orientation and remaining render states still require a same-location retail comparison.",
             "Collision, scenery, missions, destruction, and streaming are outside schema v1.",
         ],
     }
