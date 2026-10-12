@@ -5,11 +5,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
 
 from dahdev.editor_scene import (
     SCHEMA_NAME,
     SCHEMA_VERSION,
     _BufferBuilder,
+    _append_building_fixture_parts,
     validate_editor_scene_directory,
 )
 
@@ -19,6 +24,31 @@ def _sha256(data: bytes) -> str:
 
 
 class BufferBuilderTests(unittest.TestCase):
+    def test_selected_fixtures_stay_under_parent_with_independent_lod_fallback(self) -> None:
+        local = np.eye(4, dtype=np.float32)
+        local[3, :3] = (2, 3, 4)
+        component = np.eye(4, dtype=np.float32)
+        component[3, 0] = 5
+        fixture = SimpleNamespace(lods=[SimpleNamespace(index=0)], matrix=local,
+                                  index=7, tag_hash=11, visual_hash=12, offset=90, raw_record=b"native")
+        selected = SimpleNamespace(parent=SimpleNamespace(bucket_index=0, index=4),
+                                   fixture=fixture, selection=SimpleNamespace(pointer_field=100, flags=0x400, parameter_offset=80,
+                                   table_offset=120, raw_table=b"selected"))
+        objects = [{"id": "world-placement:00:0004", "preview_status": "native",
+                    "lods": [{"index": i, "parts": [{"geometry": "owner"}]} for i in (0, 1)]}]
+        def parts(lod):
+            self.assertEqual(lod.index, 0)
+            return {"parts": [{"geometry": "fixture", "matrix_row_major_f32": component.reshape(-1).tolist()}]}
+        with patch("dahdev.editor_scene._parts_lod", side_effect=parts):
+            _append_building_fixture_parts(objects, SimpleNamespace(placements=[selected]))
+        self.assertEqual(len(objects), 1)
+        for lod in objects[0]["lods"]:
+            self.assertEqual(len(lod["parts"]), 2)
+            part = lod["parts"][1]
+            self.assertEqual(part["matrix_row_major_f32"][12:15], [7, 3, 4])
+            self.assertEqual(part["building_fixture"]["selected_lod_index"], 0)
+            self.assertEqual(part["building_fixture"]["raw_record_hex"], b"native".hex())
+
     def test_aligns_and_hashes_views(self) -> None:
         builder = _BufferBuilder()
         first = builder.add(b"abc")

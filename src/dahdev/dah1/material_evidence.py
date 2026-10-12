@@ -1,4 +1,4 @@
-"""Build-pinned, read-only DAH1 Xbox material and terrain draw evidence.
+"""Build-pinned, read-only DAH1 Xbox material and draw evidence.
 
 This separates package values from the live values established by game code.
 In particular, terrain material matrices are reset at load time; reapplying
@@ -59,11 +59,22 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
         ),
         "basic_pixel_material_color_multiply": False if shader in (0, 1) else None,
         "basic_pixel_material_opacity_multiply": False if shader in (0, 1) else None,
+        "rigid_vertex_color_evidence": None if kind == "terrain" else {
+            "scope": "default rigid vertex shader 0x256138; not all actor/skin shader variants",
+            "light": "max(dot(v1.xyz, c46.xyz), 0) * c47 + c48",
+            "rgb": "((light.rgb * material.diffuse.rgb + material.additive.rgb) * c20.rgb) + c19.rgb",
+            "alpha": "material.opacity",
+            "uv": "(dot(v2, c78), dot(v2, c79))",
+            "status": "shader-dataflow-verified-runtime-light-constants-unresolved",
+            "pixel_rgb_scale": 2.0 if shader in (0, 1) else None,
+            "note": "Do not replace unresolved vertex lighting with white then apply RGB2 as a parity fix.",
+        },
         "provenance": {
             "raw_uv_transform": "material+0x20..0x3F -> shader c78/c79 at 0xE5DD0",
             "initial_terrain_uv_transform": "0xE5790 -> 0xE52C0 -> 0xE5A40 with scale=(1,1)",
             "terrain_vertex_shader": "0x251E20: DP4(v1,c78/c79); MOV(v2.xyzw,oD0)",
             "pixel_shaders": "0=0x251098; 1=0x250FA8; shader table setup at 0xE5870",
+            "rigid_vertex_shader": "0x256138 registered at 0xEEE60 and selected at 0xEF756; c76=(diffuse,0), c77=(additive,opacity) at 0xE5D2A",
         },
         "unresolved": unresolved,
     }
@@ -129,6 +140,105 @@ def terrain_segment_render_state(material: NativeMaterial, raw_flags: int) -> di
     }
 
 
+def actor_material_render_state(
+    material: NativeMaterial, *, default_draw_mode: int = 1, draw_opacity: float = 1.0,
+) -> dict[str, object]:
+    """Native ordinary-actor raster state, not a claim of lighting parity.
+
+    Rigid draw submission passes mode 1 or 4 to 0xEA010. That routine routes
+    translucent materials to mode 6; 0xE9F8A independently does so for a faded
+    draw record. Unlike terrain, there is no signed segment-layer override.
+    Special modes 0/8 deliberately remain non-applicable evidence. Runtime
+    shadow, reflection, activation and fade overrides are not inferred here.
+
+    ``evidence_status`` concerns the raster state only. Lighting, pixel shader
+    support and effective object UV matrices have separate uncertainty fields.
+    This distinction permits the proven additive pass without inventing the
+    light constants that feed the actor's vertex color.
+    """
+    if default_draw_mode not in (1, 4):
+        raise ValueError("ordinary actor default_draw_mode must be 1 or 4")
+    if len(material.raw_bytes) < 0x88:
+        raise ValueError("material lacks the verified native actor fields")
+    if not np.isfinite(draw_opacity):
+        raise ValueError("draw opacity is non-finite")
+    flags = material.render_flags
+    opacity = struct.unpack_from("<f", material.raw_bytes, 0x68)[0]
+    if not np.isfinite(opacity):
+        raise ValueError("material opacity is non-finite")
+    if material.binding and len(material.binding.raw_bytes) < 0x14:
+        raise ValueError("texture binding lacks the native alpha mode")
+    binding_mode = struct.unpack_from("<I", material.binding.raw_bytes, 0x10)[0] if material.binding else None
+    shader = struct.unpack_from("<I", material.raw_bytes, 0x84)[0]
+    native_blended = bool((binding_mode == 3 and not flags & 0x40000) or flags & 0x700 or opacity < 1.0)
+    draw_mode = default_draw_mode
+    if flags & 0x80000:
+        draw_mode = 8
+    elif native_blended:
+        if flags & 0x800:
+            draw_mode = 0
+        elif flags & 0x700 or binding_mode != 2:
+            draw_mode = 6
+    if draw_mode in (1, 4) and draw_opacity < 1.0:
+        draw_mode = 6
+
+    unresolved = []
+    if draw_mode not in (1, 4, 6):
+        unresolved.append(f"special native draw mode {draw_mode} requires its own pass reconstruction")
+    if binding_mode not in (None, 0, 1, 2, 3):
+        unresolved.append(f"unknown native texture alpha mode {binding_mode}")
+    blend = draw_mode == 6
+    if blend and not native_blended:
+        unresolved.append("per-draw fade blend factors require draw flags (0x8) or prior GPU state")
+    reference = 1 if blend else 64
+    if binding_mode == 2:
+        # CVTTSS2SI and signed subtraction at 0xE5D65, including the integer
+        # indefinite result for an out-of-range conversion (not Python bigint).
+        with np.errstate(over="ignore"):
+            scaled = float(np.float32(opacity) * np.float32(255))
+        converted = int(scaled) if -2147483648 <= scaled < 2147483648 else -2147483648
+        value = (256 - converted) & 0xFFFFFFFF
+        value = value if value < 0x80000000 else value - 0x100000000
+        reference = max(0, min(255, value))
+    source, destination, equation = ("src_alpha", "one_minus_src_alpha", "add") if blend else ("one", "zero", "add")
+    if native_blended and not flags & 0x80000:
+        for mask, operation in ((0x100, "add"), (0x200, "reverse_subtract"), (0x400, "subtract")):
+            if flags & mask:
+                source, destination, equation = "one", "one", operation
+                break
+    return {
+        "alpha_mode": "blend" if blend else "mask" if binding_mode == 2 else "opaque",
+        "alpha_test_enabled": True,
+        "alpha_reference_u8": reference,
+        "alpha_compare": "greater",
+        "blend_source": source,
+        "blend_destination": destination,
+        "blend_equation": equation,
+        "depth_write": not blend,
+        "depth_compare": "less_equal",
+        "double_sided": bool(flags & 0x4000),
+        "native_cull_enabled": not bool(flags & 0x4000),
+        "native_cull_winding": "per-draw-orientation" if not flags & 0x4000 else None,
+        "native_draw_enabled": not bool(flags & 0x80),
+        "native_draw_mode": draw_mode,
+        "native_default_draw_mode": default_draw_mode,
+        "native_draw_opacity": float(draw_opacity),
+        "native_pixel_shader_index": shader,
+        "native_texture_alpha_mode": binding_mode,
+        "native_opacity": opacity,
+        "material_opacity": opacity,
+        "evidence_scope": "ordinary-actor-raster-state-only",
+        "evidence_status": "unresolved-special-path" if unresolved else "retail-code-verified",
+        "evidence_addresses": ["0xEA050", "0xE9F8A", "0xEAB6A", "0xEABE3", "0xE5D65", "0xE6224", "0xEB340", "0xEB429", "0xEAF19", "0xE5C00"],
+        "unresolved": unresolved,
+        "visual_unresolved": [
+            "native actor lighting, tint/fade constants and shader-dependent vertex colors are not reconstructed",
+            "effective actor UV matrix requires its own runtime update path; terrain identity is not applicable",
+            "runtime shadow/fog/reflection passes and draw-opacity changes are not simulated",
+        ] + ([f"pixel shader {shader} is outside the verified basic 0/1 subset"] if shader not in (0, 1) else []),
+    }
+
+
 # Exact instruction/data spans in the pinned retail executable. Hashing every
 # span supplements (not replaces) the structural and semantic fixture tests.
 _SPANS = {
@@ -146,6 +256,17 @@ _SPANS = {
     "terrain_uv_callback": (0xE5A40, 91, "6821ecb17b7827d4e21aacc2a8b05807cce730da3ec32c11ced0214cb47af7cf"),
     "native_texture_format_table": (0x251A48, 40, "db10eada3c84a4d95fce354fc7b5a27e75e455172861b2bad7bda0afce8230a4"),
     "texture_create": (0xE64F0, 163, "600b386c318aca6fc35964f127417dd516a0190c3965b950b1284dca33c6cb28"),
+    "actor_pass_routing": (0xEA050, 127, "192de4b7894f7708a9fb738107bbe0fc6d534f6da2c31993569e4285b020517e"),
+    "actor_draw_fade_and_depth": (0xE9F8A, 128, "f7b711061f7cc4e12fa24d5014375e7736534162e54d6ff9cc215ab7f367cba1"),
+    "pass_alpha_blend_enable": (0xEAB6A, 179, "74763fd8da8cbe7360308f6d4b03a6358c130a4d7142365737c18e8825338e22"),
+    "pass_alpha_blend_jump_table": (0xEBAA4, 40, "2fc75c1db6de0ed0af479f1545acbaeacac7ba7aa1cd36cd5f8b1ea50a65c533"),
+    "material_cull": (0xE5C00, 36, "cb2d30d250b916a882f9dba2e0ba42d2263926c8896f6f0b1c5572a1c32ad046"),
+    "native_cull_setup": (0xEAF63, 56, "32f79cae71583d43b113694613edd86ad8e5d6926271a24a58d20cab82430bc5"),
+    "cull_api": (0x1D8520, 104, "45ccfa8a2acab5b36ed68f50e5838d2552179d51be5dd1ade227a21854bdc71b"),
+    "rigid_shader_registration": (0xEEE60, 353, "498f21ab427cb28926ebc867ac75fb3655fee77487610163816bf91a30a0fc7e"),
+    "rigid_shader_selection": (0xEF6E3, 145, "fba69545415a12ee4623ac5a5f1cbd221725d230f271280d0a24852852bbae27"),
+    "rigid_basic_vertex_shader": (0x256138, 276, "0399d994ea81efb4ab76757df03f4ab8cea7bb48f9f1acf45ef946cca0f7c44f"),
+    "rigid_multilight_vertex_shader": (0x256250, 388, "99003529729745193fba92e6500bed78a6b7103c6c32632edd4ec2ba24fe0faa"),
 }
 
 

@@ -5,6 +5,7 @@ import os
 import struct
 import unittest
 from collections import Counter
+from dataclasses import replace
 
 import numpy as np
 
@@ -16,7 +17,7 @@ from dahdev.dah1.materials import (
     linear_argb_size,
 )
 from dahdev.dah1.material_evidence import (
-    native_material_evidence, terrain_segment_render_state,
+    actor_material_render_state, native_material_evidence, terrain_segment_render_state,
     verify_material_executable_evidence,
 )
 
@@ -91,7 +92,7 @@ class TerrainMaterialEvidenceTests(unittest.TestCase):
     def test_retail_instruction_and_shader_spans(self):
         report = verify_material_executable_evidence(os.environ["DAHDEV_RETAIL_XBE"])
         self.assertEqual(report["status"], "verified")
-        self.assertEqual(len(report["checks"]), 14)
+        self.assertEqual(len(report["checks"]), 25)
 
     @unittest.skipUnless(os.environ.get("DAHDEV_AREA42_SOURCE"), "retail fixture not configured")
     def test_independent_native_terrain_layer_coverage(self):
@@ -124,6 +125,132 @@ class TerrainMaterialEvidenceTests(unittest.TestCase):
         self.assertEqual(equations["reverse_subtract"], 1071)
         self.assertEqual(len(materials), 91)
         self.assertEqual(sum(not np.allclose(native_material_evidence(m)["raw_uv_transform"], [1, 0, 0, 0, 0, 1, 0, 0], atol=1e-6) for m in materials.values()), 8)
+
+
+class ActorMaterialEvidenceTests(unittest.TestCase):
+    def test_opaque_still_uses_native_alpha_test(self):
+        for native_mode in (1, 4):
+            state = actor_material_render_state(_material(), default_draw_mode=native_mode)
+            self.assertEqual(state["native_draw_mode"], native_mode)
+            self.assertEqual(state["alpha_mode"], "opaque")
+            self.assertTrue(state["alpha_test_enabled"])
+            self.assertEqual(state["alpha_reference_u8"], 64)
+            self.assertEqual(state["alpha_compare"], "greater")
+            self.assertTrue(state["depth_write"])
+            self.assertEqual(state["depth_compare"], "less_equal")
+            self.assertEqual(state["evidence_status"], "retail-code-verified")
+            self.assertTrue(state["visual_unresolved"])
+
+    def test_glow_flags_force_additive_even_without_texture_alpha(self):
+        state = actor_material_render_state(_material(flags=0x4100))
+        self.assertEqual(state["native_draw_mode"], 6)
+        self.assertEqual(state["alpha_mode"], "blend")
+        self.assertEqual(state["alpha_reference_u8"], 1)
+        self.assertEqual(state["blend_source"], "one")
+        self.assertEqual(state["blend_destination"], "one")
+        self.assertEqual(state["blend_equation"], "add")
+        self.assertFalse(state["depth_write"])
+        self.assertTrue(state["double_sided"])
+        self.assertFalse(state["native_cull_enabled"])
+
+    def test_subtract_priority_and_texture_alpha_suppression(self):
+        for flags, equation in ((0x700, "add"), (0x600, "reverse_subtract"), (0x400, "subtract")):
+            state = actor_material_render_state(_material(flags=flags))
+            self.assertEqual(state["blend_equation"], equation)
+            self.assertEqual(state["blend_source"], "one")
+            self.assertEqual(state["blend_destination"], "one")
+        transparent = actor_material_render_state(_material(alpha_mode=3))
+        self.assertEqual(transparent["blend_source"], "src_alpha")
+        self.assertEqual(transparent["blend_destination"], "one_minus_src_alpha")
+        suppressed = actor_material_render_state(_material(flags=0x40000, alpha_mode=3))
+        self.assertEqual(suppressed["alpha_mode"], "opaque")
+
+    def test_masked_opacity_threshold_is_not_ordinary_transparency(self):
+        state = actor_material_render_state(_material(alpha_mode=2, opacity=.8))
+        self.assertEqual(state["alpha_mode"], "mask")
+        self.assertEqual(state["alpha_reference_u8"], 52)
+        self.assertTrue(state["depth_write"])
+        glow = actor_material_render_state(_material(flags=0x100, alpha_mode=2, opacity=.8))
+        self.assertEqual(glow["alpha_mode"], "blend")
+        self.assertEqual(glow["alpha_reference_u8"], 52)
+        ordinary = actor_material_render_state(_material(opacity=.8))
+        self.assertEqual(ordinary["alpha_mode"], "blend")
+
+    def test_per_draw_fade_is_independent_from_material_opacity(self):
+        state = actor_material_render_state(_material(alpha_mode=2), draw_opacity=.5)
+        self.assertEqual(state["native_draw_mode"], 6)
+        self.assertEqual(state["native_draw_opacity"], .5)
+        self.assertEqual(state["native_opacity"], 1)
+        self.assertEqual(state["material_opacity"], 1)
+        self.assertEqual(state["alpha_reference_u8"], 1)
+        self.assertFalse(state["depth_write"])
+        self.assertEqual(state["evidence_status"], "unresolved-special-path")
+        self.assertTrue(any("draw flags" in reason for reason in state["unresolved"]))
+
+    def test_culling_is_not_assumed_disabled_for_static_actors(self):
+        state = actor_material_render_state(_material())
+        self.assertTrue(state["native_cull_enabled"])
+        self.assertEqual(state["native_cull_winding"], "per-draw-orientation")
+        self.assertTrue(state["native_draw_enabled"])
+        self.assertFalse(actor_material_render_state(_material(flags=0x80))["native_draw_enabled"])
+
+    def test_raster_evidence_does_not_claim_shader_or_lighting_parity(self):
+        state = actor_material_render_state(_material(flags=0x14000, shader=3))
+        self.assertEqual(state["evidence_status"], "retail-code-verified")
+        self.assertFalse(state["unresolved"])
+        self.assertTrue(any("pixel shader 3" in value for value in state["visual_unresolved"]))
+        self.assertNotIn("vertex_rgb_scale", state)
+        evidence = native_material_evidence(_material(opacity=.5), "actor")
+        self.assertIsNone(evidence["effective_uv_transform"])
+        self.assertEqual(evidence["rigid_vertex_color_evidence"]["alpha"], "material.opacity")
+        self.assertIn("material.additive", evidence["rigid_vertex_color_evidence"]["rgb"])
+        self.assertFalse(evidence["basic_pixel_material_opacity_multiply"])
+
+    def test_special_routes_fail_closed_and_irrelevant_flag_does_not(self):
+        for flags, expected_mode in ((0x80000, 8), (0x900, 0)):
+            state = actor_material_render_state(_material(flags=flags))
+            self.assertEqual(state["native_draw_mode"], expected_mode)
+            self.assertEqual(state["evidence_status"], "unresolved-special-path")
+        state = actor_material_render_state(_material(flags=0x800))
+        self.assertEqual(state["native_draw_mode"], 1)
+        self.assertEqual(state["evidence_status"], "retail-code-verified")
+        self.assertEqual(actor_material_render_state(_material(alpha_mode=7))["evidence_status"], "unresolved-special-path")
+
+    def test_invalid_inputs_and_mask_reference_bounds(self):
+        for opacity in (float("nan"), float("inf")):
+            with self.assertRaisesRegex(ValueError, "non-finite"):
+                actor_material_render_state(_material(opacity=opacity))
+            with self.assertRaisesRegex(ValueError, "non-finite"):
+                actor_material_render_state(_material(), draw_opacity=opacity)
+        with self.assertRaisesRegex(ValueError, "default_draw_mode"):
+            actor_material_render_state(_material(), default_draw_mode=0)
+        with self.assertRaisesRegex(ValueError, "native actor fields"):
+            actor_material_render_state(replace(_material(), raw_bytes=bytes(4)))
+        for opacity, reference in ((-.5, 255), (2, 0), (1e20, 0)):
+            self.assertEqual(actor_material_render_state(_material(alpha_mode=2, opacity=opacity))["alpha_reference_u8"], reference)
+
+    @unittest.skipUnless(os.environ.get("DAHDEV_AREA42_SOURCE"), "retail fixture not configured")
+    def test_authentic_autopsy_cage_and_tesla_glow_materials(self):
+        reader = BlockReader(os.environ["DAHDEV_AREA42_SOURCE"])
+        expected = {0x1E6FDAFA: "autopsy", 0xE60448A1: "cage", 0xF8241AC7: "tesla"}
+        found = set()
+        for resource in reader.directory.resources:
+            if resource.type_hash != MATERIAL_TYPE or resource.name_hash not in expected:
+                continue
+            material = decode_material(reader, resource)
+            state = actor_material_render_state(material)
+            found.add(resource.name_hash)
+            self.assertEqual(material.render_flags, 0x4100)
+            self.assertEqual(state["native_texture_alpha_mode"], 0)
+            self.assertEqual(state["native_opacity"], 1)
+            self.assertEqual(state["native_pixel_shader_index"], 0)
+            self.assertEqual(state["blend_source"], "one")
+            self.assertEqual(state["blend_destination"], "one")
+            self.assertEqual(state["blend_equation"], "add")
+            self.assertFalse(state["depth_write"])
+            self.assertTrue(state["double_sided"])
+            self.assertEqual(state["evidence_status"], "retail-code-verified")
+        self.assertEqual(found, set(expected))
 
 
 class SwizzledArgbTests(unittest.TestCase):

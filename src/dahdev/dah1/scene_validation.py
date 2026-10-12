@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
+from .fixture_validation import validate_building_fixture_report
+
 
 def _object(value, label):
     if not isinstance(value, dict):
@@ -277,3 +279,5 @@ def validate_complete_scene(manifest: dict, payload: bytes) -> None:
         if Counter(item["status"] for item in inventory.values()) != Counter(
                 {"decoded": 132, "pedestrian-skin-reader": 15, "no-resolved-primary-visual": 3}):
             raise ValueError("Area42 actor visual inventory status gate failed")
+
+    validate_building_fixture_report(manifest)

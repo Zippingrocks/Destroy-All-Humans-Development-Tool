@@ -31,7 +31,9 @@ from .dah1.scatter import read_scatter_scene, scatter_report, material_render_st
 from .dah1.spawns import read_spawn_scene
 from .dah1.actor_visuals import read_actor_visuals
 from .dah1.mission_visuals import read_landing_visual_scene
-from .dah1.material_evidence import native_material_evidence, terrain_segment_render_state
+from .dah1.interiors import read_building_fixtures
+from .dah1.environment import read_environment_scene, environment_report
+from .dah1.material_evidence import native_material_evidence, terrain_segment_render_state, actor_material_render_state
 from .dah1.scene_validation import validate_complete_scene
 
 
@@ -505,6 +507,7 @@ def _material_entry(material: NativeMaterial) -> dict[str, object]:
         "raw_sha256": _sha256(material.raw_bytes),
         "render_flags": material.render_flags,
         "render_state": material_render_state(material),
+        "actor_render_state": actor_material_render_state(material),
         "native_material_evidence": native_material_evidence(material, kind="shared-resource"),
         "raw_hex": material.raw_bytes.hex(),
         "sampler": {
@@ -543,6 +546,42 @@ def _resolve_reference(reference: str | Path) -> Path:
     return path
 
 
+def _append_building_fixture_parts(objects: list[dict[str, Any]], fixtures: Any) -> None:
+    """Keep native fixture visuals owned by their existing placed building.
+
+    LOD0 uses the decoded intact fixture LOD0. Higher inspection LOD indices
+    clamp each independent fixture chain; this is not runtime distance selection.
+    """
+    by_id = {obj["id"]: obj for obj in objects}
+    for placed in fixtures.placements:
+        parent_id = f"world-placement:{placed.parent.bucket_index:02d}:{placed.parent.index:04d}"
+        owner = by_id[parent_id]
+        fixture = placed.fixture
+        if not owner["lods"] or not fixture.lods:
+            raise ValueError("selected building fixture has no renderable owner or LOD")
+        for owner_lod in owner["lods"]:
+            selected = fixture.lods[min(owner_lod["index"], len(fixture.lods) - 1)]
+            for part in _parts_lod(selected)["parts"]:
+                part["matrix_row_major_f32"] = (
+                    np.asarray(part["matrix_row_major_f32"], dtype=np.float32).reshape(4, 4)
+                    @ fixture.matrix
+                ).reshape(-1).tolist()
+                part["building_fixture"] = {
+                    "index": fixture.index, "tag_hash": f"0x{fixture.tag_hash:08X}",
+                    "visual_hash": f"0x{fixture.visual_hash:08X}",
+                    "record_offset": fixture.offset, "raw_record_hex": fixture.raw_record.hex(),
+                    "selected_lod_index": selected.index,
+                    "lod_policy": "independent-chain-clamped-inspection-index; not-runtime-distance-selection",
+                    "selection_pointer_field": placed.selection.pointer_field,
+                    "selection_flags": placed.selection.flags,
+                    "selection_parameter_offset": placed.selection.parameter_offset,
+                    "selection_table_offset": placed.selection.table_offset,
+                    "raw_selection_table_hex": placed.selection.raw_table.hex(),
+                }
+                owner_lod["parts"].append(part)
+        owner["preview_status"] += "; native-selected-intact-building-fixtures"
+
+
 def export_area42_editor_scene(
     source_dir: str | Path,
     reference: str | Path,
@@ -563,6 +602,8 @@ def export_area42_editor_scene(
     world = read_world_scene(scene.reader, include_visuals=False)
     humans = read_humans(world)
     actors = read_actor_visuals(world)
+    fixtures = read_building_fixtures(world)
+    environment = read_environment_scene(scene.reader)
     scatter = read_scatter_scene(scene)
     spawns = read_spawn_scene(scene.reader, world)
     landing = read_landing_visual_scene(scene.reader, spawns)
@@ -677,6 +718,9 @@ def export_area42_editor_scene(
     }
     static_meshes.update({part.visual.mesh.resource.name_hash: part.visual.mesh
                           for lod in landing.lods for part in lod.parts})
+    fixture_lods = [lod for placed in fixtures.placements for lod in placed.fixture.lods]
+    static_meshes.update({part.visual.mesh.resource.name_hash: part.visual.mesh
+                         for lod in fixture_lods for part in lod.parts})
     for _, mesh in sorted(static_meshes.items()):
         geometry_entries.append(_static_geometry_entry(mesh, buffer))
     human_meshes = {
@@ -747,7 +791,7 @@ def export_area42_editor_scene(
                         decode_texture_top_level(scene.reader, binding),
                     )
 
-    all_rigid_lods = [lod for actor in actors.archetypes.values() for lod in actor.lods] + list(landing.lods)
+    all_rigid_lods = [lod for actor in actors.archetypes.values() for lod in actor.lods] + list(landing.lods) + fixture_lods
     for rigid_lod in all_rigid_lods:
         for lod in rigid_lod.parts:
             for material in lod.visual.materials:
@@ -923,6 +967,8 @@ def export_area42_editor_scene(
         if rigid is not None:
             object_placements[-1]["lods"] = [_parts_lod(lod) for lod in rigid.lods]
 
+    _append_building_fixture_parts(object_placements, fixtures)
+
     landing_placements = [{"id": "landing-visual:" + p.label,
                            "editor_collection": "landing-sites",
                            "archetype": {"native_class": "MarkerType", "asset_name": "marker_landing_zone",
@@ -988,6 +1034,7 @@ def export_area42_editor_scene(
         "spawn_definitions": len(spawns.spawn_definitions),
         "landing_visual_placements": len(landing_placements),
         "renderable_world_placements": len(rendered_ids),
+        "selected_building_fixtures": len(fixtures.placements),
         "geometries": len(geometry_entries),
         "materials": len(material_records),
         "textures": len(texture_entries),
@@ -1068,6 +1115,24 @@ def export_area42_editor_scene(
         "object_placements": object_placements,
         "landing_placements": landing_placements,
         "landing_visual_validation": landing.report,
+        "environment": environment_report(environment),
+        "building_fixture_validation": {
+            "inventory": list(fixtures.inventory),
+            "selected_fixture_count": len(fixtures.placements),
+            "archetypes": [{
+                "resource": _resource(a.actor.resource), "asset_name": a.actor.asset_name,
+                "raw_actor_hex": a.raw_actor.hex(), "relocations": list(a.relocations),
+                "block_table_offset": a.block_table_offset, "fixture_table_offset": a.fixture_table_offset,
+                "blocks": [{"index": b.index, "offset": b.offset, "raw_record_hex": b.raw_record.hex(),
+                            "alternate_state_offset": b.alternate_state_offset,
+                            "alternate_state_hash": b.alternate_state_hash,
+                            "alternate_visual_hash": b.alternate_visual_hash,
+                            "alternate_visual_resource": _resource(b.alternate_visual_resource) if b.alternate_visual_resource else None,
+                            "raw_alternate_prefix_hex": b.raw_alternate_prefix.hex(),
+                            "alternate_state_rendered": False} for b in a.blocks],
+            } for a in fixtures.archetypes.values()],
+            "status": "native-instance-selected-intact-fixtures; no-destruction-simulation",
+        },
         "actor_visual_inventory": [{"resource": _resource(i.actor.resource), "asset_name": i.actor.asset_name,
                                     "native_class": i.actor.native_class, "placements": i.placement_count,
                                     "status": i.status, "detail": i.detail,
