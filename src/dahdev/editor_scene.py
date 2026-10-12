@@ -1057,6 +1057,11 @@ def export_area42_editor_scene(
             }
         )
 
+    spawn_metadata_by_placement = {
+        (layer["index"], record["placement_index"]): record
+        for layer in spawns.spawn_layers
+        for record in layer["placements"]
+    }
     object_placements: list[dict[str, object]] = []
     light_role_cache: dict[tuple[int, int], dict[str, object]] = {}
     for placement in world.placements:
@@ -1067,6 +1072,14 @@ def export_area42_editor_scene(
             actor.native_class if actor else None,
             actor.asset_name if actor else None,
         )
+        spawn_metadata = spawn_metadata_by_placement.get(
+            (placement.bucket_index, placement.index)
+        )
+        if spawn_metadata is None:
+            raise ValueError(
+                "World placement is missing from the native spawn-layer index: "
+                f"{placement.bucket_index}:{placement.index}"
+            )
         object_placements.append(
             {
                 "id": (
@@ -1088,6 +1101,8 @@ def export_area42_editor_scene(
                     "list_pointer_field": placement.list_pointer_field,
                     "list_offset": placement.list_offset,
                     "list_index": placement.list_index,
+                    "entity_id": spawn_metadata["entity_id"],
+                    "tag_ids": list(spawn_metadata["tag_ids"]),
                 },
                 "archetype": (
                     {
@@ -1221,6 +1236,10 @@ def export_area42_editor_scene(
         "scene_markers": len(scene_markers),
         "landing_sites": sum(m["kind"] == "landing-site" for m in spawns.scene_markers),
         "spawn_definitions": len(spawns.spawn_definitions),
+        "native_regions": len(spawns.regions),
+        "native_layers": len(spawns.spawn_layers),
+        "entity_tags": len(spawns.tags),
+        "script_calls": len(spawns.script_calls),
         "objective_definitions": len(objectives.objectives),
         "authored_pickups": len(objectives.collectibles),
         "collectible_probes": objectives.report["counts"]["probes"],

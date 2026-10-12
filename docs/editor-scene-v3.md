@@ -121,3 +121,9 @@ The scene intentionally exposes all authored mission content. Runtime activation
 component animation/visibility, collision-projected landing Z, fog and full
 shadow/lighting parity remain unresolved. Render-code evidence and a textured
 viewport do not establish same-camera retail fidelity or native save support.
+
+Schema v4 also mirrors each fixed placement's signed native `entity_id` and
+`tag_ids` inside `object_placements[].native`. These relationship keys come from
+the decoded spawn-layer index; they do not create new entities or imply that a
+mission layer is active. Counts for native regions, mission/load layers, entity
+tags, and decoded script calls make this organizational coverage explicit.
