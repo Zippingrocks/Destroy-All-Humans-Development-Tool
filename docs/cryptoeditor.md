@@ -25,11 +25,12 @@ GPLv3, so CryptoEditor retains its copyright notices, license, source availabili
 and modification history. Upstream changes should be merged deliberately rather
 than erasing the fork's DAH-specific node and command layers.
 
-The SWBF2 WorldEdit GitHub mirror directs development to Codeberg but does not
-currently expose an obvious license in the mirror. Do not copy or link its
-source until the active tree's license is recorded and verified compatible with
-GPLv3. We can study public behavior, file interoperability, and user-facing
-workflows and implement the required capabilities independently.
+The SWBF2 WorldEdit GitHub mirror directs development to Codeberg. The active
+tree was inspected at `cd171e7e206966c060e81c594740c63edcb480f4`; it has no
+project-level license grant. Its source therefore cannot be copied, linked, or
+ported into CryptoEditor. A pinned read-only checkout may be used to study
+public behavior, file interoperability, and user-facing workflows while we
+implement the required capabilities independently.
 
 This is a feature integration project, not a mechanical source-tree merge.
 

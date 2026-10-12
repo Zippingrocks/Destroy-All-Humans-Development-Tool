@@ -5,6 +5,13 @@ Star Wars Battlefront II (2005), not Pandemic's original internal DAH editor.
 The project now directs active development to
 [Codeberg](https://codeberg.org/PrismaticFlower/WorldEdit).
 
+The active Codeberg tree was inspected at revision
+`cd171e7e206966c060e81c594740c63edcb480f4`. It has no root `LICENSE`,
+`LICENCE`, `COPYING`, or project-level licensing statement, and representative
+core source files do not carry license grants. Licenses present under
+`third_party` apply to those bundled dependencies, not to WorldEdit's own code.
+Consequently the active source is not currently reusable in CryptoEditor.
+
 Area 42 proves that converted terrain can be displayed. It does not prove that
 WorldEdit can preserve, edit, serialize, or package a playable DAH map.
 CryptoEditor now uses TrenchBroom as its primary editor foundation; WorldEdit is a
@@ -26,8 +33,9 @@ secondary source of terrain and Pandemic-workflow ideas.
   narrow editor API; no upstream editor owns native serialization.
 - Battlefront `.wld` and `.ter` structures never become the DAH canonical model.
 - Any conversion project carries a deterministic loss report.
-- Do not fork, vendor, or copy WorldEdit source until the active upstream's
-  license is identified and its GPLv3 compatibility is documented.
+- Keep the pinned checkout read-only as a research reference. Do not fork,
+  vendor, link, or copy WorldEdit source unless its authors add an explicit
+  project license and its GPLv3 compatibility is documented.
 - Reimplement documented behavior when source reuse is unnecessary or legally
   unclear.
 
@@ -44,5 +52,5 @@ smallest useful WorldEdit-inspired feature set inside CryptoEditor:
 5. Record the interaction behavior independently of the WorldEdit source tree.
 
 That evidence decides which behaviors CryptoEditor should implement. Direct source
-porting remains a separate licensing decision.
+porting remains unavailable under the inspected upstream state.
 
