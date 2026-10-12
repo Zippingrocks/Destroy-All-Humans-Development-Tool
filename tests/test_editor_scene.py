@@ -51,7 +51,14 @@ class EditorSceneValidationTests(unittest.TestCase):
                 "byte_length": len(payload),
                 "sha256": _sha256(payload),
             },
-            "counts": {"placements": 1, "lods": 2, "geometries": 1},
+            "counts": {
+                "terrain_placements": 1,
+                "terrain_lods": 2,
+                "geometries": 1,
+                "world_placements": 1,
+                "building_placements": 1,
+                "building_renderable_placements": 1,
+            },
             "geometries": [
                 {
                     "id": "geometry:00000001",
@@ -82,6 +89,14 @@ class EditorSceneValidationTests(unittest.TestCase):
                     ],
                 }
             ],
+            "object_placements": [
+                {
+                    "id": "world-placement:00:0000",
+                    "editor_collection": "buildings",
+                    "matrix_row_major_f32": [1, 0, 0, 0] * 4,
+                    "lods": [{"index": 0, "geometry": "geometry:00000001"}],
+                }
+            ],
         }
         (root / "scene.json").write_text(json.dumps(manifest), encoding="utf-8")
         return manifest
@@ -91,8 +106,8 @@ class EditorSceneValidationTests(unittest.TestCase):
             root = Path(directory)
             self._write_scene(root)
             result = validate_editor_scene_directory(root)
-            self.assertEqual(result["schema_version"], 1)
-            self.assertEqual(result["counts"]["lods"], 2)
+            self.assertEqual(result["schema_version"], 2)
+            self.assertEqual(result["counts"]["terrain_lods"], 2)
 
     def test_rejects_a_changed_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

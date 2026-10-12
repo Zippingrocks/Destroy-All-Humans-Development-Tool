@@ -238,8 +238,17 @@ def _editor_scene_export(args: argparse.Namespace) -> int:
     else:
         counts = report["counts"]
         print(f"Scene:                {report['scene']}")
-        print(f"Terrain placements:   {counts['placements']}")
-        print(f"Geometry/LOD records: {counts['geometries']}/{counts['lods']}")
+        print(f"Terrain placements:   {counts['terrain_placements']}")
+        print(
+            "Terrain geometry/LOD: "
+            f"{counts['terrain_geometries']}/{counts['terrain_lods']}"
+        )
+        print(f"World placements:     {counts['world_placements']}")
+        print(
+            "Buildings:            "
+            f"{counts['building_placements']} placed, "
+            f"{counts['building_renderable_placements']} renderable"
+        )
         print(f"Materials/textures:   {counts['materials']}/{counts['textures']}")
         print("Reference arrays:     byte-for-byte match")
         print("Source unchanged:     yes")

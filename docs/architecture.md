@@ -1,5 +1,12 @@
 # Architecture: DAH-native core with CryptoEditor
 
+The primary design rule is that CryptoEditor's document model mirrors the native concepts
+DAH1 exposes: resource identities, load groups, instance-database buckets, actor
+archetypes, placements, LOD chains, visual meshes, material slots, terrain tiles, and
+preserved unknown fields. Editor folders, layers, brushes, and procedural tools are views
+or authoring conveniences above that model, not replacements for it. See
+`area42-native-map-structure.md` for the first retail reconstruction.
+
 ## Boundary first
 
 The DAH map and an editor document are different data models. The project keeps

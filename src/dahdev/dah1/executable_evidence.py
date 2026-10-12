@@ -75,6 +75,14 @@ class XbeImage:
 
 
 _EVIDENCE_BYTES = {
+    "terrain_vertex_declaration": (
+        0xECA10,
+        bytes.fromhex(
+            "83ec146a00683038280068201e25008d44240c50"
+            "c744241000000020c744241400003240c744241801002240"
+            "c744241c02004040c7442420ffffffffe8dfd20e00"
+        ),
+    ),
     "terrain_stream_stride_24": (
         0xECB35,
         bytes.fromhex(
@@ -166,11 +174,14 @@ def verify_executable_evidence(path: str | Path) -> dict[str, object]:
             "stride": 24,
             "uv_offset": 12,
             "uv_format": "float32x2-little-endian",
+            "diffuse_color_offset": 20,
+            "diffuse_color_format": "D3DCOLOR (ARGB dword; B,G,R,A bytes in memory)",
             "status": "verified",
             "evidence": (
-                "The native terrain draw path writes stream-0 stride 0x18; the retail "
-                "terrain texture-scale path applies a float2 affine transform, and its "
-                "terrain vertex construction stores that pair at byte +0x0C."
+                "The native terrain draw path writes stream-0 stride 0x18. The pinned "
+                "executable creates the stream declaration FLOAT3, FLOAT2, D3DCOLOR, "
+                "which places diffuse color at +0x14; its texture-scale path applies a "
+                "float2 affine transform to the pair stored at +0x0C."
             ),
         },
         "terrain_material_addressing": {
@@ -184,7 +195,7 @@ def verify_executable_evidence(path: str | Path) -> dict[str, object]:
             "status": "verified",
         },
         "remaining_unknowns": [
-            "The packed four-byte vertex attribute at +0x14 is preserved without semantics.",
+            "How terrain diffuse alpha participates in the complete retail render-state graph remains unknown; CryptoEditor preserves it but currently uses RGB modulation only.",
             "Material flags other than 0x1000 and 0x2000 remain preserved without semantics.",
             "A same-location retail capture is still required to validate viewport orientation and all render states visually.",
         ],

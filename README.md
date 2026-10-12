@@ -48,6 +48,12 @@ are established.
 - A versioned, deterministic `.dahscene` interchange export containing all 92
   native terrain placements, both LODs, material bindings, decoded texture
   previews, preserved vertex/index bytes, and per-payload provenance hashes.
+- Native Area 42 world reconstruction containing all 41 placement buckets and
+  849 object records, including 18 building/world-structure placements at their
+  retail transforms and 17 directly resolved static visuals.
+- Executable-backed identification of the terrain stream as
+  `FLOAT3, FLOAT2, D3DCOLOR`; CryptoEditor preserves the packed diffuse color
+  and uses its RGB channels for native terrain modulation.
 - Explicit support matrix for prototype, DAH1 retail, and DAH2 retail.
 - Architecture and reconstruction acceptance gates.
 - A milestone order that requires unchanged-map preservation before mutation.
@@ -88,7 +94,7 @@ python -m dahdev inspect "D:\path\to\blocks\sites\area42"
 ```
 
 See [the architecture](docs/architecture.md), [the roadmap](docs/roadmap.md),
-[the editor-scene v1 contract](docs/editor-scene-v1.md),
+[the editor-scene v2 contract](docs/editor-scene-v2.md),
 [the CryptoEditor plan](docs/cryptoeditor.md),
 [the WorldEdit feature evaluation](docs/worldedit-evaluation.md),
 [the Area 42 golden-map notes](docs/area42-golden-map.md), and the

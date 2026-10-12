@@ -20,16 +20,27 @@ from .dah1.terrain import (
     compare_reference_arrays,
     read_terrain_scene,
 )
+from .dah1.world import (
+    StaticMesh,
+    classify_editor_collection,
+    read_world_scene,
+)
 
 
 SCHEMA_NAME = "dah-editor-scene"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 AREA42_PROFILE = "dah1-retail-xbox-us"
 AREA42_MAP = "area42"
 AREA42_COUNTS = {
-    "placements": 92,
-    "lods": 184,
-    "geometries": 184,
+    "terrain_placements": 92,
+    "terrain_lods": 184,
+    "terrain_geometries": 184,
+    "world_buckets": 41,
+    "world_placements": 849,
+    "building_placements": 18,
+    "building_renderable_placements": 17,
+    "building_geometries": 7,
+    "geometries": 191,
     "lod0_vertices": 122956,
     "lod0_triangles": 103634,
     "lod1_vertices": 16240,
@@ -77,6 +88,65 @@ class _BufferBuilder:
             "length": len(payload),
             "sha256": _sha256(payload),
         }
+
+
+def _static_geometry_entry(mesh: StaticMesh, buffer: _BufferBuilder) -> dict[str, object]:
+    segment_bytes = np.asarray(
+        [segment.raw_record for segment in mesh.segments], dtype="<u2"
+    ).tobytes()
+    return {
+        "id": f"geometry:static:{mesh.resource.name_hash:08x}",
+        "kind": "static-world-object",
+        "resource": _resource(mesh.resource),
+        "counts": {
+            "vertices": len(mesh.local_positions),
+            "indices": len(mesh.indices),
+            "triangles": len(mesh.triangles),
+            "segments": len(mesh.segments),
+        },
+        "native_offsets": {
+            "vertex_buffer": mesh.vertex_buffer_offset,
+            "index_buffer": mesh.index_buffer_offset,
+            "secondary_buffer": mesh.normal_buffer_offset,
+            "segment_buffer": mesh.segment_buffer_offset,
+        },
+        "vertex_layout": {
+            "stride": mesh.stride,
+            "position": {
+                "offset": 0,
+                "format": "float32x3-little-endian",
+                "status": "verified",
+            },
+            "uv": {
+                "offset": 12,
+                "format": "float32x2-little-endian",
+                "status": "verified",
+            },
+            "normal": {
+                "offset": 20,
+                "format": "snorm16x4-little-endian",
+                "status": "structurally-verified",
+            },
+        },
+        "buffers": {
+            "vertices": buffer.add(mesh.vertex_bytes.tobytes()),
+            "index_strip": buffer.add(mesh.indices.astype("<u2", copy=False).tobytes()),
+            "triangles": buffer.add(mesh.triangles.astype("<u4", copy=False).tobytes()),
+            "segments": buffer.add(segment_bytes),
+        },
+        "segments": [
+            {
+                "index": segment.index,
+                "vertex_start": segment.vertex_start,
+                "vertex_count": segment.vertex_count,
+                "index_start": segment.index_start,
+                "index_count": segment.index_count,
+                "triangle_count": segment.triangle_count,
+                "material_slot": segment.material_slot,
+            }
+            for segment in mesh.segments
+        ],
+    }
 
 
 def _safe_relative_path(root: Path, value: object, label: str) -> Path:
@@ -127,15 +197,22 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
 
     geometries = manifest.get("geometries")
     placements = manifest.get("placements")
+    object_placements = manifest.get("object_placements")
     counts = manifest.get("counts")
-    if not isinstance(geometries, list) or not isinstance(placements, list):
+    if (
+        not isinstance(geometries, list)
+        or not isinstance(placements, list)
+        or not isinstance(object_placements, list)
+    ):
         raise ValueError("editor scene geometry and placement collections must be arrays")
     if not isinstance(counts, dict):
         raise ValueError("editor scene counts must be an object")
     if len(geometries) != _require_int(counts, "geometries", "counts"):
         raise ValueError("editor scene geometry count mismatch")
-    if len(placements) != _require_int(counts, "placements", "counts"):
-        raise ValueError("editor scene placement count mismatch")
+    if len(placements) != _require_int(counts, "terrain_placements", "counts"):
+        raise ValueError("editor scene terrain placement count mismatch")
+    if len(object_placements) != _require_int(counts, "world_placements", "counts"):
+        raise ValueError("editor scene world placement count mismatch")
 
     geometry_ids: set[str] = set()
     for geometry in geometries:
@@ -173,8 +250,33 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
         for lod in lods:
             if not isinstance(lod, dict) or lod.get("geometry") not in geometry_ids:
                 raise ValueError("editor scene LOD references an unknown geometry")
-    if lod_count != _require_int(counts, "lods", "counts"):
-        raise ValueError("editor scene LOD count mismatch")
+    if lod_count != _require_int(counts, "terrain_lods", "counts"):
+        raise ValueError("editor scene terrain LOD count mismatch")
+
+    building_count = 0
+    renderable_building_count = 0
+    for placement in object_placements:
+        if not isinstance(placement, dict):
+            raise ValueError("editor scene object placement must be an object")
+        matrix = placement.get("matrix_row_major_f32")
+        if not isinstance(matrix, list) or len(matrix) != 16:
+            raise ValueError("editor scene object matrix must contain 16 values")
+        lods = placement.get("lods")
+        if not isinstance(lods, list):
+            raise ValueError("editor scene object LODs must be an array")
+        if placement.get("editor_collection") == "buildings":
+            building_count += 1
+            if lods:
+                renderable_building_count += 1
+        for lod in lods:
+            if not isinstance(lod, dict) or lod.get("geometry") not in geometry_ids:
+                raise ValueError("editor scene object LOD references an unknown geometry")
+    if building_count != _require_int(counts, "building_placements", "counts"):
+        raise ValueError("editor scene building placement count mismatch")
+    if renderable_building_count != _require_int(
+        counts, "building_renderable_placements", "counts"
+    ):
+        raise ValueError("editor scene renderable building placement count mismatch")
 
     textures = manifest.get("textures")
     if not isinstance(textures, list):
@@ -267,6 +369,7 @@ def export_area42_editor_scene(
 
     source_hashes_before = BlockReader(source).source_hashes()
     scene = read_terrain_scene(source)
+    world = read_world_scene(scene.reader)
     comparison = compare_reference_arrays(build_reference_arrays(scene), reference_file)
     if not comparison["all_arrays_byte_equal"]:
         raise ValueError("native terrain does not match the verified reference arrays")
@@ -285,6 +388,7 @@ def export_area42_editor_scene(
         geometry_entries.append(
             {
                 "id": f"geometry:{name_hash:08x}",
+                "kind": "terrain",
                 "resource": _resource(geometry.resource),
                 "counts": {
                     "vertices": len(geometry.local_positions),
@@ -309,7 +413,15 @@ def export_area42_editor_scene(
                         "format": "float32x2-little-endian",
                         "status": "verified",
                     },
-                    "unknown_tail": {"offset": 20, "length": 4},
+                    "diffuse_color": {
+                        "offset": 20,
+                        "format": "D3DCOLOR-BGRA8",
+                        "status": "verified",
+                        "evidence": (
+                            "DAH1 US Xbox retail terrain declaration at 0xECA10: "
+                            "FLOAT3, FLOAT2, D3DCOLOR in a stride-24 stream"
+                        ),
+                    },
                 },
                 "buffers": {
                     "vertices": buffer.add(geometry.vertex_bytes.tobytes()),
@@ -336,6 +448,23 @@ def export_area42_editor_scene(
             }
         )
 
+    building_placements_native = [
+        placement
+        for placement in world.placements
+        if placement.actor is not None
+        and classify_editor_collection(
+            placement.actor.native_class, placement.actor.asset_name
+        )
+        == "buildings"
+    ]
+    static_meshes = {
+        lod.visual.mesh.resource.name_hash: lod.visual.mesh
+        for placement in building_placements_native
+        for lod in placement.actor.lods
+    }
+    for _, mesh in sorted(static_meshes.items()):
+        geometry_entries.append(_static_geometry_entry(mesh, buffer))
+
     material_records: dict[int, NativeMaterial] = {}
     texture_images: dict[int, tuple[object, object]] = {}
     placement_lod_slots: dict[tuple[int, int], list[str]] = {}
@@ -347,6 +476,17 @@ def export_area42_editor_scene(
             ]
             for slot in slots:
                 material = slot.material
+                material_records[material.resource.name_hash] = material
+                binding = material.binding
+                if binding is not None and binding.texture_hash not in texture_images:
+                    texture_images[binding.texture_hash] = (
+                        binding,
+                        decode_texture_top_level(scene.reader, binding),
+                    )
+
+    for placement in building_placements_native:
+        for lod in placement.actor.lods:
+            for material in lod.visual.materials:
                 material_records[material.resource.name_hash] = material
                 binding = material.binding
                 if binding is not None and binding.texture_hash not in texture_images:
@@ -422,6 +562,75 @@ def export_area42_editor_scene(
             }
         )
 
+    object_placements: list[dict[str, object]] = []
+    for placement in world.placements:
+        actor = placement.actor
+        collection = classify_editor_collection(
+            actor.native_class if actor else None,
+            actor.asset_name if actor else None,
+        )
+        object_placements.append(
+            {
+                "id": (
+                    f"world-placement:{placement.bucket_index:02d}:"
+                    f"{placement.index:04d}"
+                ),
+                "editor_collection": collection,
+                "native": {
+                    "bucket_index": placement.bucket_index,
+                    "bucket_hash": f"0x{placement.bucket_hash:08X}",
+                    "record_index": placement.index,
+                    "record_offset": placement.offset,
+                    "raw_header_hex": placement.raw_header.hex(),
+                    "raw_header_sha256": _sha256(placement.raw_header),
+                    "packed_yaw_quaternion_zw": f"0x{placement.packed_rotation:08X}",
+                },
+                "archetype": (
+                    {
+                        "resource": _resource(actor.resource),
+                        "native_class": actor.native_class,
+                        "asset_name": actor.asset_name,
+                        "lod_resource": (
+                            _resource(actor.lod_resource)
+                            if actor.lod_resource is not None
+                            else None
+                        ),
+                    }
+                    if actor is not None
+                    else None
+                ),
+                "position_f32": [float(value) for value in placement.position],
+                "quaternion_xyzw_f32": [
+                    float(value) for value in placement.quaternion_xyzw
+                ],
+                "scale_f32": float(placement.scale),
+                "matrix_row_major_f32": [
+                    float(value) for value in placement.matrix.reshape(-1)
+                ],
+                "lods": [
+                    {
+                        "index": lod.index,
+                        "visual": _resource(lod.visual.resource),
+                        "source_visual_type": (
+                            f"0x{lod.visual.source_visual_type:08X}"
+                        ),
+                        "destruction_state": lod.visual.destruction_state,
+                        "geometry": (
+                            "geometry:static:"
+                            f"{lod.visual.mesh.resource.name_hash:08x}"
+                        ),
+                        "material_slots": [
+                            f"material:{material.resource.name_hash:08x}"
+                            for material in lod.visual.materials
+                        ],
+                    }
+                    for lod in actor.lods
+                ]
+                if actor is not None
+                else [],
+            }
+        )
+
     lod0_vertices = sum(
         len(placement.children[0].geometry.local_positions)
         for placement in scene.placements
@@ -439,8 +648,16 @@ def export_area42_editor_scene(
         for placement in scene.placements
     )
     counts = {
-        "placements": len(placements),
-        "lods": sum(len(placement.children) for placement in scene.placements),
+        "terrain_placements": len(placements),
+        "terrain_lods": sum(len(placement.children) for placement in scene.placements),
+        "terrain_geometries": len(scene.geometries),
+        "world_buckets": len(world.buckets),
+        "world_placements": len(object_placements),
+        "building_placements": len(building_placements_native),
+        "building_renderable_placements": sum(
+            bool(placement.actor.lods) for placement in building_placements_native
+        ),
+        "building_geometries": len(static_meshes),
         "geometries": len(geometry_entries),
         "materials": len(material_records),
         "textures": len(texture_entries),
@@ -475,6 +692,7 @@ def export_area42_editor_scene(
             "directory_version": scene.reader.directory.version,
             "directory_unknown0": scene.reader.directory.unknown0,
             "scene_chain_offsets": list(scene.scene_chain),
+            "world_instance_database": _resource(world.database),
             "load_groups": [
                 {
                     "index": group.index,
@@ -517,12 +735,14 @@ def export_area42_editor_scene(
         ],
         "textures": texture_entries,
         "placements": placements,
+        "object_placements": object_placements,
         "unknowns": [
-            "Vertex bytes +0x14..+0x17 are preserved without assigned semantics.",
             "The high byte of terrain segment raw_flags is preserved without assigned semantics.",
             "Material flags other than verified U/V clamp bits are preserved without assigned semantics.",
             "Viewport orientation and remaining render states still require a same-location retail comparison.",
-            "Collision, scenery, missions, destruction, and streaming are outside schema v1.",
+            "The guard tower's segmented/destructible visual has its placement and archetype preserved, but its shared material indirection is not yet renderable.",
+            "Non-building world placements preserve their native placement and archetype metadata; their visual mesh families are not yet promoted to renderable schema v2 geometry.",
+            "Collision, missions, destruction-state editing, and streaming are outside schema v2.",
         ],
     }
     manifest_path = output / "scene.json"

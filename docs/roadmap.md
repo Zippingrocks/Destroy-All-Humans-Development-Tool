@@ -27,6 +27,9 @@
   geometry, native UV channel, and native material assignments.
 - [x] Confirm stride 24 and the `+0x0C..+0x13` float2 UV interpretation in the
   pinned retail executable.
+- [x] Confirm the retail terrain declaration is `FLOAT3, FLOAT2, D3DCOLOR`,
+  preserve the packed diffuse color at `+0x14`, and apply its RGB modulation in
+  CryptoEditor without guessing its alpha/blend semantics.
 - [x] Recover per-axis wrap/clamp from material `+0x7C` flags and reproduce it in
   CryptoEditor.
 - [x] Expand the inspection view across every placement and both LODs.
@@ -43,6 +46,13 @@
   and `dahdev`, with payload hashes, provenance, and explicit unknown fields.
 - [x] Load Area 42's native LOD0/LOD1 reference meshes and material assignments
   without converting them into brushes or a heightfield.
+- [x] Parse the native world instance database: 41 buckets, 849 placements, and
+  the 18 retail building/world-structure placements present in Area 42.
+- [x] Follow the verified placement -> actor archetype -> visual LOD -> static
+  mesh/material chain for 17 directly renderable building placements and show
+  them at their retail transforms in the Area 42 reference scene.
+- [x] Group native placements by DAH semantic class in the map-elements UI while
+  retaining native bucket/record identity and unresolved records.
 - [ ] Add explicit DAH terrain, reference mesh, object, and unknown-data node types.
 - [ ] Keep brush construction available for new geometry without implying that a
   brush is a lossless representation of retail terrain.
@@ -88,7 +98,8 @@ conversion.
 
 ## 7. Broader DAH1 map systems
 
-- Objects and their mesh LODs.
+- Complete the remaining segmented/destructible building visual indirection and
+  expand static-object mesh decoding beyond the building class.
 - Collision, destruction, regions, paths, missions, and streaming.
 - Resource registration and cross-package dependency validation.
 
