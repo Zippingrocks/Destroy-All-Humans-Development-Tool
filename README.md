@@ -70,6 +70,15 @@ are established.
   plus signed segment-layer ordering, native vertex alpha, the basic RGB-times-two
   shader path, LEQUAL depth and evidenced reverse-subtract detail blending.
 - Explicit support matrix for prototype, DAH1 retail, and DAH2 retail.
+- Native first-sky geometry and draw contract, plus authored static/dynamic sun
+  data and owning-visual light selection. Live atmosphere parity remains open.
+- Original-resolution texture export with every authored mip level, native
+  filtering/LOD bias, and all four material texture-stage dependencies. No
+  resizing, generated mipmaps, AI upscaling, or invented high-resolution assets.
+- 264 placed pickup references (24 probes and five mission debris pickups) and
+  146 decoded mission objective definitions. Targets link to native placements
+  and regions; six inspection markers use proven region centers. Raw Lua
+  bytecode is preserved and reparsed during structural validation.
 
 The current interchange is [schema v4](docs/editor-scene-v3.md#schema-v4-current).
 The existing contract document retains v3 explicitly as history. Detailed native

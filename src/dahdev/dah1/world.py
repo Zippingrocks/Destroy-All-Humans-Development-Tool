@@ -200,6 +200,8 @@ def classify_editor_collection(native_class: str | None, asset_name: str | None)
         return "buildings"
     if native_class == "RandomType":
         return "population"
+    if native_class == "PowerupType" or (asset_name and asset_name.startswith("pu_")):
+        return "pickups"
     if asset_name and asset_name.startswith("a_"):
         return "animals"
     if asset_name and asset_name.startswith("h_"):
@@ -232,7 +234,7 @@ def _semantic_actor_strings(raw: bytes) -> tuple[str | None, str | None]:
         (
             value
             for value in strings
-            if value.startswith(("a_", "b_", "e_", "h_", "m_", "p_", "r_", "v_"))
+            if value.startswith(("a_", "b_", "e_", "h_", "m_", "p_", "pu_", "r_", "v_"))
         ),
         None,
     )

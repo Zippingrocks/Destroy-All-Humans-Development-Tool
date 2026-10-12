@@ -17,7 +17,7 @@ from dahdev.dah1.materials import (
     linear_argb_size,
 )
 from dahdev.dah1.material_evidence import (
-    actor_material_render_state, native_material_evidence, terrain_segment_render_state,
+    actor_material_render_state, native_material_evidence, native_sampler_state, terrain_segment_render_state,
     verify_material_executable_evidence,
 )
 
@@ -92,7 +92,7 @@ class TerrainMaterialEvidenceTests(unittest.TestCase):
     def test_retail_instruction_and_shader_spans(self):
         report = verify_material_executable_evidence(os.environ["DAHDEV_RETAIL_XBE"])
         self.assertEqual(report["status"], "verified")
-        self.assertEqual(len(report["checks"]), 25)
+        self.assertEqual(len(report["checks"]), 34)
 
     @unittest.skipUnless(os.environ.get("DAHDEV_AREA42_SOURCE"), "retail fixture not configured")
     def test_independent_native_terrain_layer_coverage(self):
@@ -201,10 +201,49 @@ class ActorMaterialEvidenceTests(unittest.TestCase):
         self.assertTrue(any("pixel shader 3" in value for value in state["visual_unresolved"]))
         self.assertNotIn("vertex_rgb_scale", state)
         evidence = native_material_evidence(_material(opacity=.5), "actor")
-        self.assertIsNone(evidence["effective_uv_transform"])
+        self.assertEqual(evidence["effective_uv_transform"], evidence["raw_uv_transform"])
+        self.assertEqual(evidence["uv_transform_status"], "retail-initial-material-load-preserved")
         self.assertEqual(evidence["rigid_vertex_color_evidence"]["alpha"], "material.opacity")
         self.assertIn("material.additive", evidence["rigid_vertex_color_evidence"]["rgb"])
         self.assertFalse(evidence["basic_pixel_material_opacity_multiply"])
+
+    def test_only_proven_initial_uv_contracts_are_applied(self):
+        for kind in ("actor", "sky", "static-world-object", "human-reference-pose"):
+            evidence = native_material_evidence(_material(), kind)
+            self.assertEqual(evidence["effective_uv_transform"], [2, 0, 0, -.5, 0, 2, 0, -.5])
+            self.assertEqual(evidence["rigid_vertex_color_evidence"]["null_tint_multiplier_c20"], [1, 1, 1, 1])
+            self.assertEqual(evidence["rigid_vertex_color_evidence"]["null_tint_additive_c19"], [0, 0, 0, 0])
+            self.assertTrue(any("animation" in reason for reason in evidence["unresolved"]))
+        self.assertIsNone(native_material_evidence(_material(), "unknown") ["effective_uv_transform"])
+
+    def test_native_sampler_preserves_mip_bias_and_authored_chain(self):
+        material = _material(flags=0x3000)
+        raw = bytearray(material.binding.raw_bytes)
+        struct.pack_into("<f", raw, 0x24, -1.0)
+        material = replace(material, binding=replace(material.binding, mip_levels=3, raw_bytes=bytes(raw)))
+        state = native_sampler_state(material)
+        self.assertEqual(state["min_filter"], "linear")
+        self.assertEqual(state["mag_filter"], "linear")
+        self.assertEqual(state["mip_filter"], "linear")
+        self.assertEqual(state["lod_bias"], -1)
+        self.assertEqual(state["address_u"], "clamp")
+        self.assertEqual(state["address_v"], "clamp")
+        self.assertEqual(state["max_level"], 2)
+        self.assertFalse(state["generate_mipmaps"])
+        special = native_sampler_state(replace(material, render_flags=0x100000))
+        self.assertEqual(special["mag_filter"], "nearest")
+        self.assertEqual(special["min_filter"], "linear")
+        self.assertEqual(special["mip_filter"], "none")
+        self.assertEqual(native_sampler_state(_material())["mip_filter"], "none")
+
+    def test_sampler_binding_bounds_and_nonfinite_bias_fail_closed(self):
+        material = _material()
+        with self.assertRaisesRegex(ValueError, "LOD bias"):
+            native_sampler_state(replace(material, binding=replace(material.binding, raw_bytes=bytes(16))))
+        raw = bytearray(material.binding.raw_bytes)
+        struct.pack_into("<f", raw, 0x24, float("nan"))
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            native_sampler_state(replace(material, binding=replace(material.binding, raw_bytes=bytes(raw))))
 
     def test_special_routes_fail_closed_and_irrelevant_flag_does_not(self):
         for flags, expected_mode in ((0x80000, 8), (0x900, 0)):

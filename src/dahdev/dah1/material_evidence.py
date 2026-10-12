@@ -18,6 +18,41 @@ from .materials import NativeMaterial
 
 
 _IDENTITY_UV = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+_INITIAL_RAW_UV_KINDS = frozenset({"actor", "static-world-object", "human-reference-pose", "sky"})
+
+
+def native_sampler_state(material: NativeMaterial) -> dict[str, object]:
+    """Stage-0 sampler after texture bind followed by material setup.
+
+    Retail uses the authored chain, not a generated mip pyramid. The binding's
+    +0x24 float is a mip LOD bias, not a texture dimension or opacity field.
+    """
+    binding = material.binding
+    if binding is None:
+        return {"evidence_status": "unbound-material", "mip_filter": "none"}
+    if len(binding.raw_bytes) < 0x28:
+        raise ValueError("texture binding lacks its native mip LOD bias")
+    if binding.mip_levels < 1:
+        raise ValueError("native sampler requires at least one mip level")
+    bias = struct.unpack_from("<f", binding.raw_bytes, 0x24)[0]
+    if not np.isfinite(bias):
+        raise ValueError("native mip LOD bias is non-finite")
+    point_magnification = bool(material.render_flags & 0x100000)
+    mip_filter = "linear" if binding.mip_levels > 1 and not point_magnification else "none"
+    return {
+        "address_u": material.address_u,
+        "address_v": material.address_v,
+        "min_filter": "linear",
+        "mag_filter": "nearest" if point_magnification else "linear",
+        "mip_filter": mip_filter,
+        "lod_bias": bias,
+        "native_mip_levels": binding.mip_levels,
+        "base_level": 0,
+        "max_level": binding.mip_levels - 1,
+        "generate_mipmaps": False,
+        "evidence_status": "retail-code-verified",
+        "evidence_addresses": ["0xE6692", "0xE66A7", "0xE5CDC", "0xE5C44"],
+    }
 
 
 def native_material_evidence(material: NativeMaterial, kind: str = "terrain") -> dict[str, object]:
@@ -25,7 +60,8 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
 
     The runtime terrain scale callback may subsequently change the matrix for
     flag 0x800000 materials. Its initial argument is explicitly (1, 1). Unknown
-    object-specific matrix update paths are not silently assigned that behavior.
+    Actor/sky loading preserves the original matrix; material-animation updates
+    happen later. Other kinds must opt into a verified initial-load contract.
     """
     raw = material.raw_bytes
     if len(raw) < 0x80:
@@ -35,18 +71,23 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
         raise ValueError("material UV transform contains non-finite values")
     shader = struct.unpack_from("<I", raw, 0x84)[0] if len(raw) >= 0x88 else None
     unresolved = []
-    if kind != "terrain":
+    initial_raw_uv = kind in _INITIAL_RAW_UV_KINDS
+    if kind != "terrain" and not initial_raw_uv:
         unresolved.append("effective non-terrain UV matrix requires its own runtime update path")
-    if material.render_flags & 0x800000:
+    if initial_raw_uv:
+        unresolved.append("material animation, script edits and shared-material runtime changes are not simulated")
+    if kind == "terrain" and material.render_flags & 0x800000:
         unresolved.append("runtime terrain texture-scale callback changes are not simulated")
     if shader not in (0, 1):
         unresolved.append("pixel shader is outside the verified basic shader 0/1 subset")
     return {
         "raw_uv_transform": list(matrix),
-        "effective_uv_transform": list(_IDENTITY_UV) if kind == "terrain" else None,
+        "effective_uv_transform": list(_IDENTITY_UV) if kind == "terrain" else list(matrix) if initial_raw_uv else None,
         "uv_transform_status": (
-            "retail-initial-terrain-load-identity" if kind == "terrain" else "unresolved-runtime-state"
+            "retail-initial-terrain-load-identity" if kind == "terrain" else
+            "retail-initial-material-load-preserved" if initial_raw_uv else "unresolved-runtime-state"
         ),
+        "native_sampler": native_sampler_state(material),
         "native_pixel_shader_index": shader,
         "native_diffuse_color": list(struct.unpack_from("<3f", raw, 0x50)),
         "native_additive_color": list(struct.unpack_from("<3f", raw, 0x5C)),
@@ -66,12 +107,18 @@ def native_material_evidence(material: NativeMaterial, kind: str = "terrain") ->
             "alpha": "material.opacity",
             "uv": "(dot(v2, c78), dot(v2, c79))",
             "status": "shader-dataflow-verified-runtime-light-constants-unresolved",
+            "null_tint_multiplier_c20": [1.0, 1.0, 1.0, 1.0],
+            "null_tint_additive_c19": [0.0, 0.0, 0.0, 0.0],
+            "tint_source": "light/context record +0x14 -> c20; +0x18 -> c19; defaults only when +0x14 is null",
             "pixel_rgb_scale": 2.0 if shader in (0, 1) else None,
             "note": "Do not replace unresolved vertex lighting with white then apply RGB2 as a parity fix.",
         },
         "provenance": {
             "raw_uv_transform": "material+0x20..0x3F -> shader c78/c79 at 0xE5DD0",
             "initial_terrain_uv_transform": "0xE5790 -> 0xE52C0 -> 0xE5A40 with scale=(1,1)",
+            "initial_actor_sky_uv_transform": "type 0x9709513E factory 0xE1455 -> 0xE01B0 -> 0xE5AA0 -> 0xE60A0 resolves texture handles only; clone 0xE5F30 copies +0x20 matrix",
+            "runtime_uv_animation": "0xCEB65 / 0xCED22 -> 0xE5970 recomputes +0x20 from animated +0x08..+0x18",
+            "draw_tint_constants": "0xEB20B..0xEB273 uploads c20/c19; null +0x14 uses 1/0 respectively",
             "terrain_vertex_shader": "0x251E20: DP4(v1,c78/c79); MOV(v2.xyzw,oD0)",
             "pixel_shaders": "0=0x251098; 1=0x250FA8; shader table setup at 0xE5870",
             "rigid_vertex_shader": "0x256138 registered at 0xEEE60 and selected at 0xEF756; c76=(diffuse,0), c77=(additive,opacity) at 0xE5D2A",
@@ -233,7 +280,7 @@ def actor_material_render_state(
         "unresolved": unresolved,
         "visual_unresolved": [
             "native actor lighting, tint/fade constants and shader-dependent vertex colors are not reconstructed",
-            "effective actor UV matrix requires its own runtime update path; terrain identity is not applicable",
+            "material animation and later UV updates are not simulated; initial actor UVs retain the authored matrix",
             "runtime shadow/fog/reflection passes and draw-opacity changes are not simulated",
         ] + ([f"pixel shader {shader} is outside the verified basic 0/1 subset"] if shader not in (0, 1) else []),
     }
@@ -267,6 +314,15 @@ _SPANS = {
     "rigid_shader_selection": (0xEF6E3, 145, "fba69545415a12ee4623ac5a5f1cbd221725d230f271280d0a24852852bbae27"),
     "rigid_basic_vertex_shader": (0x256138, 276, "0399d994ea81efb4ab76757df03f4ab8cea7bb48f9f1acf45ef946cca0f7c44f"),
     "rigid_multilight_vertex_shader": (0x256250, 388, "99003529729745193fba92e6500bed78a6b7103c6c32632edd4ec2ba24fe0faa"),
+    "material_resource_factory": (0xE1455, 21, "e1c6f0eab7bbf2c86dba3ef5b62f77e43ab3d2232a6571081afa678a1bbece28"),
+    "material_wrapper_constructor": (0xE5AA0, 82, "619c40a9813f6126af2291b72e8ee9bf04beb3e15db127dce5807ba585a99852"),
+    "material_load_preserves_uv": (0xE60A0, 59, "b0c335fad610baf1f506928082b813932b9e61be21b254a54a2824ffdb9969b6"),
+    "material_clone_copies_uv": (0xE5F6E, 47, "259f9b9e3f1d3b0dbae5f7d0eaa04241faf683f3d096ef403e8e144167940435"),
+    "material_matrix_copy": (0xD78B0, 8, "b69497b3e817b482455d7c91ce7588f72684ee6611a6f72dcc78b958c2b1462e"),
+    "draw_tint_constants": (0xEB20B, 104, "51ce57789fdd3f5892c4c8856db0ee817c53a0a19e253fabadeb0e97ded245dd"),
+    "sampler_binding_mips_bias": (0xE6686, 94, "d69da40565189dfeedce4e547d8b53d2dbb749c8d9724b50dfb7e3dda7874ac5"),
+    "sampler_material_filters": (0xE5CDC, 78, "025c11bb66558de5264f82ec4f53ec086d6f2c5380e7640c945de20009b0b274"),
+    "material_animated_uv": (0xE5970, 194, "bd7fe2583b097db4a1492aeaf9407d5cf31b81a196472dcd9fc0d201a45becaf"),
 }
 
 

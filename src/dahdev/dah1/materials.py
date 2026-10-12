@@ -158,24 +158,54 @@ def decode_linear_argb_top_level(payload: bytes, width: int, height: int, format
 
 
 def decode_material(reader: BlockReader, resource: ResourceRecord) -> NativeMaterial:
+    group, raw = _material_data(reader, resource)
+    render_flags = struct.unpack_from("<I", raw, 0x7C)[0]
+    return NativeMaterial(resource, raw, render_flags, resource.offset + 0x6C,
+                          _decode_material_texture_binding(reader, resource, group, raw, 0))
+
+
+def _material_data(reader: BlockReader, resource: ResourceRecord):
     if resource.type_hash != MATERIAL_TYPE:
         raise ValueError(f"resource 0x{resource.name_hash:08X} is not a material")
     if resource.size < 128:
         raise ValueError("material record is too short for its verified fields")
-
     group = reader.load_group(resource.load_group)
+    if resource.offset < 0 or resource.offset + resource.size > group.resource_limit:
+        raise ValueError("material record extends outside resource data")
     raw = group.data[resource.offset : resource.offset + resource.size]
-    render_flags = struct.unpack_from("<I", raw, 0x7C)[0]
-    pointer_field = resource.offset + 108
+    if len(raw) != resource.size:
+        raise ValueError("material record is truncated")
+    return group, raw
+
+
+def decode_material_texture_bindings(
+    reader: BlockReader, resource: ResourceRecord,
+) -> tuple[TextureBinding | None, ...]:
+    """All four native texture stages, preserving unbound slots and identities.
+
+    Retail material initialization 0xE60BC resolves exactly four consecutive
+    pointers at +0x6C/+0x70/+0x74/+0x78. Stage 1 is not an alternative diffuse
+    texture: reflection and other shaders sample it independently.
+    """
+    group, raw = _material_data(reader, resource)
+    return tuple(_decode_material_texture_binding(reader, resource, group, raw, stage)
+                 for stage in range(4))
+
+
+def _decode_material_texture_binding(reader, resource, group, raw, stage):
+    field_offset = 0x6C + stage * 4
+    pointer_field = resource.offset + field_offset
     binding_offset = group.relocations.pointers.get(pointer_field)
     if binding_offset is None:
-        if raw[108:112] != bytes(4):
-            raise ValueError("material binding field is non-zero but has no relocation")
-        return NativeMaterial(resource, raw, render_flags, pointer_field, None)
+        if raw[field_offset:field_offset + 4] != bytes(4):
+            raise ValueError(f"material stage {stage} binding field is non-zero but has no relocation")
+        return None
 
-    if binding_offset + 52 > group.resource_limit:
+    if binding_offset < 0 or binding_offset + 52 > group.resource_limit:
         raise ValueError("material texture binding extends outside resource data")
     binding_raw = group.data[binding_offset : binding_offset + 52]
+    if len(binding_raw) != 52:
+        raise ValueError("material texture binding is truncated")
     format_word, levels, width, height = struct.unpack_from("<4I", binding_raw)
     texture_hash = struct.unpack_from("<I", binding_raw, 24)[0]
     texture = reader.resource_by_identity(TEXTURE_TYPE, texture_hash)
@@ -202,21 +232,15 @@ def decode_material(reader: BlockReader, resource: ResourceRecord) -> NativeMate
             "dimensions, format word, and mip count"
         )
 
-    return NativeMaterial(
-        resource=resource,
-        raw_bytes=raw,
-        render_flags=render_flags,
-        binding_pointer_field=pointer_field,
-        binding=TextureBinding(
-            offset=binding_offset,
-            raw_bytes=binding_raw,
-            format_word=format_word,
-            mip_levels=levels,
-            width=width,
-            height=height,
-            texture_hash=texture_hash,
-            texture_resource=texture,
-        ),
+    return TextureBinding(
+        offset=binding_offset,
+        raw_bytes=binding_raw,
+        format_word=format_word,
+        mip_levels=levels,
+        width=width,
+        height=height,
+        texture_hash=texture_hash,
+        texture_resource=texture,
     )
 
 
@@ -380,6 +404,67 @@ def decode_texture_top_level(reader: BlockReader, binding: TextureBinding) -> Im
     if binding.format_word == 9:
         return decode_dxt5_top_level(payload, binding.width, binding.height)
     raise ValueError(f"unsupported terrain texture format word 0x{binding.format_word:X}")
+
+
+def texture_mip_layout(binding: TextureBinding) -> tuple[dict[str, int], ...]:
+    """Offsets of authored levels, largest first; no synthesized mip tail.
+
+    The verified compressed and swizzled resources store compact, contiguous
+    levels. Linear textures have one native level and a verified tight pitch.
+    A partial native chain is valid: its last level is not required to be 1x1.
+    """
+    width, height, count = binding.width, binding.height, binding.mip_levels
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height, count)):
+        raise ValueError("native mip dimensions and count must be positive integers")
+    if count > max(width, height).bit_length():
+        raise ValueError("native mip count exceeds the dimension chain")
+    if binding.format_word == 0:
+        argb8_mip_chain_size(width, height, count)
+        level_size = lambda w, h: w * h * 4
+    elif binding.format_word in (4, 5):
+        bpp = 4 if binding.format_word == 4 else 2
+        linear_argb_size(width, height, count, bpp)
+        level_size = lambda w, h: w * h * bpp
+    elif binding.format_word in (8, 9):
+        level_size = dxt1_level_size if binding.format_word == 8 else bc3_level_size
+    else:
+        raise ValueError(f"unsupported native mip texture format word 0x{binding.format_word:X}")
+    layout = []
+    cursor = 0
+    for index in range(count):
+        size = level_size(width, height)
+        layout.append({"level": index, "width": width, "height": height,
+                       "byte_offset": cursor, "byte_length": size})
+        cursor += size
+        width, height = max(1, width // 2), max(1, height // 2)
+    if cursor != binding.texture_resource.size:
+        raise ValueError("native mip chain size does not match the texture resource")
+    return tuple(layout)
+
+
+def decode_texture_mip_levels(reader: BlockReader, binding: TextureBinding) -> tuple[Image.Image, ...]:
+    """Decode every original mip without resizing, filtering or upscaling.
+
+    Each RGBA image comes from that level's own native payload, including
+    authored alpha coverage. GPU-generated replacements are not equivalent.
+    """
+    layout = texture_mip_layout(binding)
+    payload = texture_payload(reader, binding)
+    images = []
+    for level in layout:
+        offset, size = level["byte_offset"], level["byte_length"]
+        data = payload[offset:offset + size]
+        width, height = level["width"], level["height"]
+        if binding.format_word == 0:
+            image = decode_swizzled_argb8_top_level(data, width, height)
+        elif binding.format_word in (4, 5):
+            image = decode_linear_argb_top_level(data, width, height, binding.format_word)
+        elif binding.format_word == 8:
+            image = decode_dxt1_top_level(data, width, height)
+        else:
+            image = decode_dxt5_top_level(data, width, height)
+        images.append(image)
+    return tuple(images)
 
 
 def material_dependency_report(scene: TerrainScene) -> dict[str, object]:

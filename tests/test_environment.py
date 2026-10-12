@@ -7,14 +7,17 @@ import os
 import struct
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
-from dahdev.dah1.container import BlockReader, LoadedGroup, RelocationTable
+from dahdev.dah1.container import BlockReader, LoadedGroup, RelocationTable, ResourceRecord
 from dahdev.dah1.environment import (
     FOG_TYPE, CameraFogProfile, NativeSpan, _camera_mapping, _camera_profiles,
     _decode_fog, _local_assignments, _span, _target, environment_report,
     fog_matrix, fog_plane, read_environment_scene, verify_environment_executable_evidence,
+    lighting_contract, sky_draw_contract, sky_initial_vertex_rgba, sky_view_projection,
+    visual_light_role,
 )
 from dahdev.dah1.spawns import LuaPrototype, parse_lua4
 from dahdev.dah1.transforms import instance_matrix
@@ -37,6 +40,100 @@ def local_proto(value=71):
 
 
 class EnvironmentUnitTests(unittest.TestCase):
+    def test_sky_export_keeps_only_first_visual_and_original_material_slot_order(self):
+        from dahdev.editor_scene import _sky_placement_entry, _validate_sky_manifest, _resource
+        resources = [ResourceRecord(i, 0x9805A0A6, 0x100 + i, 0, 0, 0xC0, 0) for i in range(4)]
+        materials = [SimpleNamespace(resource=resources[i]) for i in (2, 3)]
+        visual = SimpleNamespace(resource=resources[0], materials=materials,
+                                 mesh=SimpleNamespace(resource=resources[1], segments=[SimpleNamespace(material_slot=1), SimpleNamespace(material_slot=0)]))
+        environment = SimpleNamespace(sky=SimpleNamespace(span=SimpleNamespace(offset=1234), visuals=(visual, "unresolved second visual")))
+        contract = {"first_visual_enabled": True, "second_visual_enabled": False,
+                    "first_visual_name_hash": "0x00000100", "force_far_depth": False, "depth_write": False,
+                    "placement": "identity; remove camera translation", "materials": [
+                        {"name_hash": "0x00000102", "initial_vertex_rgba": [.43, .43, .43, 1], "native_pixel_shader": 0},
+                        {"name_hash": "0x00000103", "initial_vertex_rgba": [.51, .51, .51, 1], "native_pixel_shader": 0}]}
+        placement = _sky_placement_entry(environment, contract)
+        self.assertEqual(placement["native"]["visual_index"], 0)
+        self.assertEqual(placement["lods"][0]["sky_render_states"][0]["name_hash"], "0x00000103")
+        manifest = {"sky_placements": [placement], "counts": {"sky_placements": 1, "sky_geometries": 1},
+                    "environment": {"sky": {"draw_contract": contract}},
+                    "geometries": [{"id": "geometry:static:00000101", "kind": "static-world-object", "segments": [{"material_slot": 1}, {"material_slot": 0}]}],
+                    "materials": [{"id": f"material:{m.resource.name_hash:08x}", "resource": _resource(m.resource)} for m in materials]}
+        _validate_sky_manifest(manifest)
+        placement["matrix_row_major_f32"][12] = 1
+        with self.assertRaisesRegex(ValueError, "identity"):
+            _validate_sky_manifest(manifest)
+        placement["matrix_row_major_f32"][12] = 0
+        placement["lods"][0]["sky_render_states"][0]["depth_compare"] = "always"
+        with self.assertRaisesRegex(ValueError, "pass state"):
+            _validate_sky_manifest(manifest)
+        contract["first_visual_enabled"] = False
+        with self.assertRaisesRegex(ValueError, "unresolved"):
+            _sky_placement_entry(environment, contract)
+
+    def test_multipart_light_role_is_inherited_not_reclassified(self):
+        from dahdev.editor_scene import _inherit_native_light_role
+        role = {"role": "dynamic", "native_visual_flags": 4, "resource_name_hash": "0x12345678"}
+        placement = {"lods": [{"parts": [{"visual": {"native_visual_flags": 0}}, {}]}, {"geometry": "mesh"}]}
+        _inherit_native_light_role(placement, role)
+        self.assertEqual(placement["native_light_role"], role)
+        self.assertEqual(placement["lods"][1]["native_light_role"], role)
+        for part in placement["lods"][0]["parts"]:
+            self.assertEqual(part["native_light_role"], role)
+
+    def test_sky_matrix_removes_only_view_translation(self):
+        view = instance_matrix(np.asarray((0, 0, np.sin(.3), np.cos(.3))), np.asarray((100, -45, 12)), np.float32(1))
+        projection = np.asarray([[2, 0, 0, 0], [0, 3, 0, 0], [0, 0, 1.2, 1], [0, 0, -4, 0]], dtype=np.float32)
+        rotation_view = view.copy()
+        rotation_view[3, :3] = 0
+        result = sky_view_projection(view, projection)
+        np.testing.assert_array_equal(result, rotation_view @ projection)
+        # A translated view cannot make the sky move; yaw still changes it.
+        translated = view.copy()
+        translated[3, :3] += 500
+        np.testing.assert_array_equal(sky_view_projection(translated, projection), result)
+        self.assertFalse(np.array_equal(result, projection))
+        clip = np.asarray((3, 4, 8, 1)) @ result
+        self.assertNotEqual(clip[2], clip[3])  # No invented z=w override.
+        for bad in (np.eye(3), np.full((4, 4), np.nan)):
+            with self.assertRaises(ValueError):
+                sky_view_projection(view, bad)
+
+    def test_sky_additive_color_is_not_halved_or_replaced_by_white(self):
+        raw = bytearray(0x88)
+        struct.pack_into("<4f", raw, 0x5C, .43, .51, .29, .8)
+        material = SimpleNamespace(raw_bytes=bytes(raw), render_flags=0,
+                                   binding=SimpleNamespace(raw_bytes=bytes(32)))
+        np.testing.assert_allclose(sky_initial_vertex_rgba(material), (.43, .51, .29, .8), atol=3e-8)
+        for offset, value in ((0x50, .1), (0x68, 1.1)):
+            changed = bytearray(raw)
+            struct.pack_into("<f", changed, offset, value)
+            material.raw_bytes = bytes(changed)
+            with self.assertRaises(ValueError):
+                sky_initial_vertex_rgba(material)
+
+    def test_visual_light_role_is_header_bit_not_asset_class_name(self):
+        raw = bytearray(0xC0)
+        struct.pack_into("<II", raw, 0, 0x9805A0A6, 0xDEADBEEF)
+        resource = ResourceRecord(0, 0x9805A0A6, 0xDEADBEEF, 0, 0, len(raw), 0)
+        for flags, expected in ((0, "static"), (4, "dynamic"), (0xFFFF, "dynamic"), (8, "static")):
+            struct.pack_into("<H", raw, 0x9C, flags)
+            group = LoadedGroup(0, "test", 0, "raw", bytes(raw), len(raw), "hash", RelocationTable({}, "reloc"), "test")
+            reader = SimpleNamespace(load_group=lambda _: group)
+            result = visual_light_role(reader, resource)
+            self.assertEqual(result["role"], expected)
+            self.assertEqual(result["native_visual_flags"], flags)
+            self.assertEqual(result["field_offset"], 0x9C)
+        with self.assertRaises(ValueError):
+            visual_light_role(reader, dataclasses.replace(resource, size=0x9C))
+        alias = visual_light_role(reader, dataclasses.replace(resource, name_hash=0x01020304))
+        self.assertEqual(alias["resource_name_hash"], "0x01020304")
+        self.assertEqual(alias["payload_name_hash"], "0xDEADBEEF")
+        self.assertEqual(alias["identity_status"], "directory-alias")
+        self.assertEqual(alias["raw_identity_hex"], raw[:8].hex())
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            visual_light_role(reader, dataclasses.replace(resource, type_hash=0x01020304))
+
     def test_fog_fields_and_raw_preservation(self):
         fog = synthetic_fog()
         self.assertEqual(fog.extent, 150)
@@ -135,6 +232,30 @@ class EnvironmentGoldenTests(unittest.TestCase):
     def setUpClass(cls):
         cls.scene = read_environment_scene(os.environ["DAHDEV_AREA42_SOURCE"])
 
+    def test_all_selected_owner_visual_types_and_directory_alias(self):
+        from dahdev.dah1.world import read_world_scene
+        from dahdev.dah1.actor_visuals import read_actor_visuals
+        from dahdev.dah1.humans import read_humans
+        reader = self.scene.reader
+        world = read_world_scene(reader, include_visuals=False)
+        rigid, skins = read_actor_visuals(world), read_humans(world)
+        visuals = {(a.visual_resource.load_group, a.visual_resource.offset): a.visual_resource
+                   for a in rigid.archetypes.values()}
+        visuals.update({(a.actor.lod_resource.load_group, a.actor.lod_resource.offset): a.actor.lod_resource
+                        for a in skins.archetypes.values()})
+        self.assertEqual(len(visuals), 137)
+        self.assertEqual({v.type_hash for v in visuals.values()}, {0x6FC132F2, 0x2C84BEFF})
+        aliases = []
+        for resource in visuals.values():
+            role = visual_light_role(reader, resource)
+            group = reader.load_group(resource.load_group)
+            flags = struct.unpack_from("<H", group.data, resource.offset + 0x9C)[0]
+            self.assertEqual(role["role"], "dynamic" if flags & 4 else "static")
+            self.assertEqual(role["raw_identity_hex"], group.data[resource.offset:resource.offset + 8].hex())
+            if role["identity_status"] == "directory-alias":
+                aliases.append((resource.offset, role["resource_name_hash"], role["payload_name_hash"]))
+        self.assertEqual(aliases, [(0x6C31F8, "0xEB82AFFB", "0x8FC2C4CB")])
+
     def test_world_direct_references_and_payloads(self):
         scene = self.scene
         self.assertEqual(scene.world_resource.name_hash, 0xB31C6654)
@@ -201,9 +322,46 @@ class EnvironmentGoldenTests(unittest.TestCase):
         report = environment_report(self.scene)
         json.dumps(report, allow_nan=False)
         self.assertEqual(report["status"], "decoded-native-evidence-not-live-environment")
-        self.assertIsNone(report["sky"]["visuals"][0]["materials"][0]["effective_uv_transform"])
+        self.assertTrue(report["sky"]["draw_contract"]["first_visual_enabled"])
+        self.assertFalse(report["sky"]["draw_contract"]["second_visual_enabled"])
         self.assertTrue(any("interpolation" in item for item in report["unresolved"]))
         self.assertEqual(bytes.fromhex(report["fog"]["native"]["raw_bytes_hex"]), self.scene.fog.span.raw_bytes)
+
+    def test_first_sky_contract_is_geometry_not_a_replacement_cubemap(self):
+        contract = sky_draw_contract(self.scene)
+        self.assertEqual(contract["evidence_status"], "retail-initial-sky-verified")
+        self.assertTrue(contract["first_visual_enabled"])
+        self.assertFalse(contract["second_visual_enabled"])
+        self.assertTrue(contract["depth_test"])
+        self.assertEqual(contract["depth_compare"], "less_equal")
+        self.assertFalse(contract["depth_write"])
+        self.assertFalse(contract["force_far_depth"])
+        self.assertFalse(contract["fog_enabled"])
+        self.assertEqual(contract["c19"], [0, 0, 0, 0])
+        self.assertEqual(contract["c20"], [1, 1, 1, 1])
+        materials = contract["materials"]
+        self.assertEqual([m["name_hash"] for m in materials], ["0x4FE66423", "0xD21014BE"])
+        self.assertEqual(materials[0]["effective_uv_transform"][0], 4)
+        self.assertEqual(materials[0]["effective_uv_transform"][3], -1.5)
+        self.assertEqual([m["alpha_reference_u8"] for m in materials], [64, 1])
+        self.assertEqual([m["blend_destination"] for m in materials], ["zero", "one"])
+        np.testing.assert_allclose(materials[0]["initial_vertex_rgba"], (.431373, .431373, .431373, 1), atol=1e-7)
+        np.testing.assert_allclose(materials[1]["initial_vertex_rgba"], (.501961, .501961, .501961, 1), atol=1e-7)
+
+    def test_sun_colors_and_positive_direction_reach_shader_constants(self):
+        contract = lighting_contract(self.scene)
+        self.assertEqual(contract["evidence_status"], "retail-authored-light-verified")
+        self.assertFalse(contract["terrain_uses_this_light"])
+        np.testing.assert_allclose(contract["static"]["diffuse_rgb"], (.792157, .654902, .490196), atol=1e-7)
+        np.testing.assert_allclose(contract["static"]["ambient_rgb"], (.250980, .250980, .247059), atol=1e-7)
+        np.testing.assert_allclose(contract["dynamic"]["ambient_rgb"], (.247059, .243137, .227451), atol=1e-7)
+        sun = next(sun for sun in self.scene.suns if sun.role == "static")
+        x, y, z, w = sun.quaternion
+        expected_direction = (2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y))
+        np.testing.assert_allclose(contract["static"]["direction_world"], expected_direction, atol=1e-7)
+        self.assertFalse(contract["static"]["direction_normalized"])
+        self.assertIn("unresolved", contract["static"]["runtime_direction_status"])
+        self.assertEqual(contract["static"]["direction_world"], contract["dynamic"]["direction_world"])
 
 
 @unittest.skipUnless(os.environ.get("DAHDEV_RETAIL_XBE"), "set DAHDEV_RETAIL_XBE for executable pins")
@@ -211,7 +369,7 @@ class EnvironmentExecutableTests(unittest.TestCase):
     def test_pinned_executable_and_all_semantic_evidence_spans(self):
         result = verify_environment_executable_evidence(Path(os.environ["DAHDEV_RETAIL_XBE"]))
         self.assertEqual(result["status"], "verified")
-        self.assertEqual(len(result["checks"]), 18)
+        self.assertEqual(len(result["checks"]), 36)
 
 
 if __name__ == "__main__":

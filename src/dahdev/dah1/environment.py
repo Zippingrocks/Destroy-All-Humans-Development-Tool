@@ -343,9 +343,9 @@ def read_environment_scene(source: str | Path | BlockReader) -> EnvironmentScene
     unresolved.extend((
         "camera profiles are configured endpoints; active mode, transition interpolation and cinematic overrides are not simulated",
         "World.Update supplies graphics-global+0xEC as fog parent; live parent selection and preview-camera correspondence remain unverified",
-        "sky draw has a translation-free first visual and a separate camera-scaled/query-controlled second visual; exact placement/compositing remains unimplemented",
-        "sky material UV runtime state and material-to-vertex lighting path are not yet verified; terrain identity-UV and vertex-RGB assumptions must not be applied",
-        "sun vectors are loader-verified fields, not yet verified diffuse/ambient lighting, shadow or light-level semantics",
+        "first sky visual has a verified initial-load draw contract; the separate camera-scaled/query-controlled second visual is not yet reconstructed",
+        "initial sky material UV and additive-color path are verified; subsequent animated UV, object-color or script updates are not simulated",
+        "authored sun diffuse/ambient fields are consumer-verified; live camera directions, shadow and light-level behavior are not fully reconstructed",
         "no native save, collision or gameplay activation parity is established by this read-only reconstruction",
     ))
     return EnvironmentScene(reader, world, world_span, fog, tuple(suns), sky, profiles, scripts, tuple(unresolved))
@@ -382,13 +382,15 @@ def environment_report(scene: EnvironmentScene) -> dict[str, object]:
                 "equation": "oFog=dot(local_position_xyzw,c56); c56=(z/dot(z,z),-dot(origin,z/dot(z,z)))",
                 "distance_basis": "transformed plane coordinate, not Euclidean camera distance",
                 "provenance": {"fields": "0xF3630: payload+B4..E8", "matrix": "0xF3710", "plane": "0xF55E0", "linear_mode": "0x1E2ACF mode 0 -> NV_LINEAR 0x2601; parameters (1,1,0)"}},
+        "lighting_contract": lighting_contract(scene),
         "suns": [{"role": sun.role, "node": _span_report(sun.node_span), "native": _span_report(sun.span),
                   "position": list(sun.position), "quaternion_xyzw": list(sun.quaternion), "scale": sun.scale,
                   "raw_vectors_b4_c0_cc": [list(vector) for vector in sun.raw_vectors], "raw_tail_d8": sun.raw_tail,
-                  "field_status": "0xE4DB0 loader verified; lighting interpretation unresolved"} for sun in scene.suns],
+                  "field_status": "B4 diffuse and CC ambient are consumer-verified; C0 is overwritten runtime direction, D8 remains uninterpreted"} for sun in scene.suns],
         "sky": {"native": _span_report(scene.sky.span), "raw_vector_bc": list(scene.sky.raw_vector),
                 "visuals": sky_visuals, "draw_provenance": "world+1C -> 0xF687C -> 0xE7150; first visual+1C, second+2C; loader 0xF38C0",
-                "render_status": "dependencies decoded; special sky runtime transforms and shader path unresolved"},
+                "draw_contract": sky_draw_contract(scene),
+                "render_status": "first visual initial-load draw contract verified; second query-controlled visual unresolved"},
         "camera_profiles": [{"mode": profile.mode, "start": profile.start, "end": profile.end,
                              "farplane": profile.farplane, "provenance": list(profile.provenance),
                              "status": "native Lua configured endpoint, not active interpolated state"} for profile in scene.camera_profiles],
@@ -400,7 +402,187 @@ def environment_report(scene: EnvironmentScene) -> dict[str, object]:
         "unresolved": list(scene.unresolved)}
 
 
+def sky_view_projection(view: np.ndarray, projection: np.ndarray) -> np.ndarray:
+    """Return the row-vector first-sky transform, before API clip conversion.
+
+    0xE71EB copies the native view and 0xE720B removes its translation. 0xE7241
+    calls 0xD64A0, which TRANSPOSES the view@projection result for four GPU DP4
+    constants. This helper returns the ordinary row-vector product, not those
+    register rows. It neither forces z=w nor scales the authored sky geometry.
+    """
+    rotation_view = _matrix(view).copy()
+    rotation_view[3, :3] = 0
+    projection = np.asarray(projection, dtype=np.float32)
+    if projection.shape != (4, 4) or not np.isfinite(projection).all():
+        raise ValueError("expected a finite 4x4 projection matrix")
+    return rotation_view @ projection
+
+
+def sky_initial_vertex_rgba(material) -> tuple[float, ...]:
+    """Verified Area42 first-sky subset: diffuse=0, c20=1, c19=0.
+
+    The regular rigid shader computes (light*diffuse+additive)*c20+c19.
+    Null sky multiplier/addend pointers select identity/zero at 0xEB20B.
+    Do not infer this result for a sky material with nonzero diffuse color.
+    """
+    if _floats(material.raw_bytes, 0x50, 3) != (0.0, 0.0, 0.0):
+        raise ValueError("sky material needs unresolved lighting constants")
+    shader = struct.unpack_from("<I", material.raw_bytes, 0x84)[0]
+    if shader != 0 or material.render_flags not in (0, 0x100):
+        raise ValueError("sky material is outside the verified Area42 first-pass subset")
+    opacity = _floats(material.raw_bytes, 0x68, 1)[0]
+    if not 0 <= opacity <= 1 or material.binding is None:
+        raise ValueError("sky opacity or texture is outside the verified subset")
+    if struct.unpack_from("<I", material.binding.raw_bytes, 0x10)[0] != 0:
+        raise ValueError("sky texture alpha mode is outside the verified subset")
+    return (*_floats(material.raw_bytes, 0x5C, 3), opacity)
+
+
+def sky_draw_contract(scene: EnvironmentScene) -> dict[str, object]:
+    """Native initial sky pass, suitable for a separate camera-relative draw.
+
+    This is the verified static initial state, not a reconstruction of every
+    script/animation update. The second sky visual remains dependency-only.
+    """
+    first = scene.sky.visuals[0]
+    materials = []
+    unresolved = []
+    for material in first.materials:
+        try:
+            rgba = sky_initial_vertex_rgba(material)
+        except ValueError as error:
+            unresolved.append(f"0x{material.resource.name_hash:08X}: {error}")
+            continue
+        additive = bool(material.render_flags & 0x100)
+        materials.append({
+            "name_hash": f"0x{material.resource.name_hash:08X}",
+            "evidence_status": "retail-initial-sky-verified", "native_pixel_shader": 0,
+            "initial_vertex_rgba": list(rgba), "vertex_rgb_scale": 2.0,
+            "pixel_rgb": "clamp(2 * texture.rgb * material.additive.rgb, 0, 1)",
+            "pixel_alpha": "texture.a * material.opacity",
+            "effective_uv_transform": list(_floats(material.raw_bytes, 0x20, 8)),
+            "uv_transform_status": "retail-initial-material-state-verified-before-animation",
+            "uv_equation": "u'=dot((u,v,0,1),matrix[0:4]); v'=dot((u,v,0,1),matrix[4:8])",
+            "alpha_test_enabled": True, "alpha_compare": "greater",
+            "alpha_reference_u8": 1 if additive else 64,
+            "alpha_mode": "blend" if additive else "opaque",
+            "blend_source": "one", "blend_destination": "one" if additive else "zero",
+            "blend_equation": "add", "depth_write": False,
+            "address_u": material.address_u, "address_v": material.address_v,
+            "native_cull_mode": "0x901", "lighting_enabled": False,
+        })
+    return {
+        "evidence_status": "retail-initial-sky-verified" if not unresolved else "unresolved-material-subset",
+        "first_visual_name_hash": f"0x{first.resource.name_hash:08X}",
+        "first_visual_enabled": not unresolved,
+        "placement": "native sky vertices, identity object matrix; camera translation removed from view",
+        "matrix_equation": "clip_row = native_position_row @ view_without_translation @ projection",
+        "gpu_constants": "c36..c39 = transpose(view_without_translation @ projection)",
+        "depth_test": True, "depth_compare": "less_equal", "depth_write": False,
+        "force_far_depth": False, "draw_order": "before native world geometry",
+        "fog_enabled": False, "editor_shade_faces": False,
+        "c19": [0.0, 0.0, 0.0, 0.0], "c20": [1.0, 1.0, 1.0, 1.0],
+        "materials": materials,
+        "second_visual_name_hash": f"0x{scene.sky.visuals[1].resource.name_hash:08X}",
+        "second_visual_enabled": False,
+        "second_visual_status": "camera-far-scaled placement and query-controlled opacity require separate reconstruction",
+        "evidence_addresses": ["0xE7150", "0xE71EB", "0xE720B", "0xE7241", "0xD64A0",
+                               "0xE72CF", "0xE750A", "0xEA155", "0x22A2F8", "0xE7430",
+                               "0xEB20B", "0xE60A0", "0xE5DD0", "0x256138", "0x251098"],
+        "unresolved": unresolved + ["animated UV changes, occlusion-controlled second visual, and runtime sky replacement are not simulated"],
+    }
+
+
+def lighting_contract(scene: EnvironmentScene) -> dict[str, object]:
+    """Consumer-verified authored directional lights, not active camera state.
+
+    Sun+1C is diffuse (c47), sun+34 ambient (c48). Sun+28 is a direction
+    obtained by transforming +Z with the authored node, then canceling node
+    scale (0xE4E50). The rigid draw transforms this direction to object space
+    (0xF7D00); do not flip its sign or normalize it as an aesthetic adjustment.
+    """
+    lights = {}
+    for sun in scene.suns:
+        if sun.role not in ("static", "dynamic"):
+            continue
+        if any(field == 8 for field, _ in sun.node_span.relocations):
+            raise ValueError("authored sun parent transform is not yet supported")
+        if sun.scale == 0:
+            raise ValueError("authored sun has zero scale")
+        rotation = quaternion_matrix_xyzw(np.asarray(sun.quaternion, dtype=np.float32))
+        # Keep the native float32 multiply/divide order and raw quaternion.
+        direction = (rotation[2, :3] * np.float32(sun.scale)) * np.float32(1 / sun.scale)
+        lights[sun.role] = {
+            "direction_world": direction.tolist(),
+            "direction_normalized": False,
+            "diffuse_rgb": list(sun.raw_vectors[0]),
+            "ambient_rgb": list(sun.raw_vectors[2]),
+            "evidence_status": "retail-authored-light-verified",
+            "runtime_direction_status": "unresolved-camera-profile-and-interpolation-overrides",
+            "native_name_hash": f"0x{sun.span.name_hash:08X}",
+            "native_color_sha256": sun.span.sha256,
+        }
+    return {
+        "evidence_status": "retail-authored-light-verified", **lights,
+        "rigid_shader_equation": "light=max(dot(native_normal_local,c46.xyz),0)*c47.rgb+c48.rgb; vertex.rgb=(light*material.diffuse+material.additive)*c20.rgb+c19.rgb",
+        "direction_sign": "positive dot(normal,direction); no negation",
+        "c46_space": "world direction transformed by render-object native inverse, then object inverse-scale compensation",
+        "terrain_uses_this_light": False,
+        "terrain_status": "terrain shader 0x251E20 passes native packed vertex diffuse; do not apply this extra directional-light model",
+        "c19_c20_status": "per-object multiplier/addend; null pointers give c20=1,c19=0; non-null object paths must use decoded evidence",
+        "role_selection": "owning native instance top-level visual header uint16+9C bit4: dynamic if set, static otherwise; carry role into multipart components",
+        "exposure_status": "no additional exposure or gamma multiplier is established here",
+        "evidence_addresses": ["0xE4DB0", "0xE4E50", "0xF7C90", "0xF7D00", "0xF7D22", "0xEB0C3", "0x7C118", "0x7C165", "0xE4D50"],
+        "unresolved": ["live camera light directions, per-object color effects, local lights, shadow passes and script color overrides are not represented by the authored sun defaults"],
+    }
+
+
+def visual_light_role(reader: BlockReader, resource: ResourceRecord) -> dict[str, object]:
+    """Initial world-instance light role; pass its OWN visual, not a mesh/child.
+
+    Common visual loader 0xE7860 maps payload+9C to runtime flags+18. World
+    loader 0xE5724 selects the light from these flags and stores it on the
+    instance. A multipart renderer inherits that selection from its owner.
+    This helper does not claim runtime reassignment or local lights are solved.
+    """
+    if resource.size < 0x9E:
+        raise ValueError("visual lacks the common native header")
+    group = reader.load_group(resource.load_group)
+    # The directory can register an alias for a shared visual payload. Area42's
+    # pu_ufo_debris LOD is registered as EB82AFFB but embeds 8FC2C4CB. Its type
+    # and pointer bounds must match; name equality is not a native invariant.
+    span = _span(group, resource.offset, resource.size, resource.type_hash)
+    flags = struct.unpack_from("<H", span.raw_bytes, 0x9C)[0]
+    return {"role": "dynamic" if flags & 4 else "static", "native_visual_flags": flags,
+            "evidence_status": "retail-initial-instance-light-selection-verified",
+            "resource_name_hash": f"0x{resource.name_hash:08X}", "load_group": resource.load_group,
+            "payload_name_hash": f"0x{span.name_hash:08X}",
+            "identity_status": "directory-alias" if resource.name_hash != span.name_hash else "matching-directory-and-payload-name",
+            "raw_identity_hex": span.raw_bytes[:8].hex(),
+            "field_offset": resource.offset + 0x9C, "raw_field_hex": span.raw_bytes[0x9C:0x9E].hex(),
+            "provenance": "0xE786C header+9C -> runtime+18; 0xE5732 bit4 -> world+28(dynamic)/+24(static); 0xE5743 -> instance+DC",
+            "scope": "initial owning instance; multipart components inherit owner role"}
+
+
 _SPANS = {
+    "world_instance_light_role": (0xE5724, 46, "c05539afe210c3a94092f46ae83c558b3bb61ebe1cdc91b7cc2be4b84d63ba13"),
+    "material_preserves_initial_uv": (0xE60A0, 190, "8f15787232c846c587a78b935c911237c1247dbb481ce976ec7c46cfc9642dab"),
+    "material_uv_shader_upload": (0xE5DD0, 15, "3f8e9553075bb429ecaa1d39b8bcd8144a0b5d3530d0d1a248dadb6c4fd0a4c1"),
+    "sky_view_projection": (0xE71EB, 91, "ea2a28cac6bb61851f16344563765bd6a02396aa8debc51432d16f44a1f8b922"),
+    "sky_null_color_context": (0xE7184, 53, "3a49ff2764c83c5895aff6756963adca350e46e5211fe3b18621ca1e18b10597"),
+    "sky_rigid_shader": (0xE7430, 6, "c28940172d53f34cde071cc5178213dc5dc775e3feb6c298778c2b9f99b90af5"),
+    "sky_depth_disable": (0xE72CF, 43, "9a8d55fb2edcda419dab8e49f8916fce88fc616a94e85e549cb27cfca8beb0ed"),
+    "sky_depth_restore": (0xE750A, 47, "07db61f8a3f46b381a5bed83fff97ce0b756645468835f6b45f9ba5253a0bc2e"),
+    "depth_write_command": (0xEA155, 36, "7114f2ff995bee7a7529cf3c8d96843581a175d46cfcac773e259c821e58e4b8"),
+    "depth_write_method_table": (0x22A2F8, 4, "fe8da8e65b3e3eecf13c4cbc7af6dcb57238077f2cb53c668fc4fb3f633dca4f"),
+    "null_color_constants": (0xEB20B, 104, "51ce57789fdd3f5892c4c8856db0ee817c53a0a19e253fabadeb0e97ded245dd"),
+    "matrix_multiply_transpose": (0xD64A0, 113, "a6c6178b5e9abed0bc43590d5ba7fa492dd2fb33ca92d6cf9dca23ccdbb01b5a"),
+    "sun_direction_update": (0xE4E50, 89, "54a6b5386db67fb9b7262b713863a50fb7f3227b77fbbe7910abac782ee524e7"),
+    "rigid_sun_constants": (0xF7CD4, 114, "c39c9a646022c999aa0c0bd2d733c10de88e17dc44f5cbdf25b691d5eaca6dff"),
+    "light_constant_upload": (0xEB0C3, 78, "d02e6969013a8532fe4bfee13ffadc17fcbfae0ed22c20781383aba38d8d1721"),
+    "camera_light_direction": (0xE4D50, 93, "34b4e07624a5d4ce6d03b1240800f10bbd8a8c823b558655d46fcd82a6bf184b"),
+    "visual_flags_loader": (0xE7860, 24, "9acb95e66e7c57dbc2d9e4f25af7bf8362e198bd8c7b823be7a47267cdd2dcd0"),
+    "visual_light_selection": (0xF5A4D, 40, "670e681b2a0eb6be856f5bff8f5e52061ce3df55930a422bb2a88ae437fb14e6"),
     "world_environment_refs": (0xE5752, 36, "98c5a5b1e6368fe8935e8b99404605cceea97e332894701e8b2deaaa176b2abc"),
     "fog_loader": (0xF3630, 220, "1261564633c84b1320cba1e7d7bb163f471a94c638fa6cd1ac21fe0b04de7045"),
     "light_loader": (0xE4DB0, 160, "d0cc1e58c6c20acb630e7fb0cd1f926dc36945ae958a7d1e6435c4a877274e6d"),

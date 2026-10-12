@@ -12,8 +12,12 @@ import numpy as np
 from .dah1.container import BlockReader, ResourceRecord
 from .dah1.materials import (
     NativeMaterial,
-    decode_texture_top_level,
+    TextureBinding,
+    decode_material_texture_bindings,
+    decode_texture_mip_levels,
     terrain_material_slots,
+    texture_mip_layout,
+    texture_payload,
 )
 from .dah1.terrain import (
     TerrainScene,
@@ -29,11 +33,12 @@ from .dah1.world import (
 from .dah1.humans import read_humans, validate_human_archetype_reports
 from .dah1.scatter import read_scatter_scene, scatter_report, material_render_state
 from .dah1.spawns import read_spawn_scene
+from .dah1.objectives import read_objectives, validate_objective_report
 from .dah1.actor_visuals import read_actor_visuals
 from .dah1.mission_visuals import read_landing_visual_scene
 from .dah1.interiors import read_building_fixtures
-from .dah1.environment import read_environment_scene, environment_report
-from .dah1.material_evidence import native_material_evidence, terrain_segment_render_state, actor_material_render_state
+from .dah1.environment import read_environment_scene, environment_report, visual_light_role
+from .dah1.material_evidence import native_material_evidence, native_sampler_state, terrain_segment_render_state, actor_material_render_state
 from .dah1.scene_validation import validate_complete_scene
 
 
@@ -77,6 +82,88 @@ def _parts_lod(lod: Any) -> dict[str, object]:
     return {"index": lod.index, "geometry": parts[0]["geometry"],
             "material_slots": parts[0]["material_slots"], "parts": parts,
             "visual": _resource(lod.resource), "preview_status": lod.pose_status}
+
+
+def _inherit_native_light_role(placement: dict[str, Any], role: dict[str, object] | None) -> None:
+    """The owning visual selects one initial light; child meshes do not reselect it."""
+    placement["native_light_role"] = role
+    for lod in placement["lods"]:
+        lod["native_light_role"] = role
+        for part in lod.get("parts", []):
+            part["native_light_role"] = role
+
+
+def _sky_placement_entry(environment: Any, contract: dict[str, Any]) -> dict[str, object]:
+    if contract.get("first_visual_enabled") is not True:
+        raise ValueError("initial native sky materials have unresolved draw state")
+    visual = environment.sky.visuals[0]
+    states = {state["name_hash"]: state for state in contract["materials"]}
+    segment_states = []
+    for segment in visual.mesh.segments:
+        material = visual.materials[segment.material_slot]
+        name = f"0x{material.resource.name_hash:08X}"
+        if name not in states:
+            raise ValueError("native sky segment lacks verified material state")
+        segment_states.append({**states[name], "sky": True, "depth_compare": "less_equal",
+                               "fog_enabled": False, "editor_shade_faces": False})
+    return {
+        "id": f"sky-visual:{visual.resource.name_hash:08x}",
+        "editor_collection": "environment-sky", "preview_status": "retail-initial-sky-verified",
+        "native": {"visual": _resource(visual.resource), "controller_offset": environment.sky.span.offset,
+                   "visual_index": 0, "placement_status": contract["placement"]},
+        "position_f32": [0.0, 0.0, 0.0],
+        "matrix_row_major_f32": np.eye(4, dtype=np.float32).reshape(-1).tolist(),
+        "native_light_role": None,
+        "lods": [{"index": 0, "visual": _resource(visual.resource),
+                  "geometry": f"geometry:static:{visual.mesh.resource.name_hash:08x}",
+                  "material_slots": [f"material:{m.resource.name_hash:08x}" for m in visual.materials],
+                  "sky_render_states": segment_states}],
+    }
+
+
+def _validate_sky_manifest(manifest: dict[str, Any]) -> None:
+    """Validate the optional initial-sky extension without changing legacy scenes."""
+    if "sky_placements" not in manifest:
+        return
+    placements = manifest["sky_placements"]
+    counts = manifest.get("counts", {})
+    if not isinstance(placements, list) or len(placements) != 1 or counts.get("sky_placements") != 1:
+        raise ValueError("initial sky must contain exactly its verified first visual")
+    contract = manifest.get("environment", {}).get("sky", {}).get("draw_contract", {})
+    if (contract.get("first_visual_enabled") is not True or contract.get("second_visual_enabled") is not False
+            or contract.get("force_far_depth") is not False or contract.get("depth_write") is not False):
+        raise ValueError("sky draw contract is missing or unsupported")
+    states = {s["name_hash"]: s for s in contract.get("materials", [])}
+    geometries = {g["id"]: g for g in manifest["geometries"]}
+    materials = {m["id"]: m for m in manifest["materials"]}
+    placement = placements[0]
+    if (placement.get("matrix_row_major_f32") != np.eye(4).reshape(-1).tolist()
+            or placement.get("native", {}).get("visual_index") != 0):
+        raise ValueError("sky placement must preserve identity and first visual selection")
+    if placement["native"].get("visual", {}).get("name_hash") != contract.get("first_visual_name_hash"):
+        raise ValueError("sky placement disagrees with the native controller reference")
+    lods = placement.get("lods")
+    if not isinstance(lods, list) or len(lods) != 1 or lods[0].get("index") != 0:
+        raise ValueError("initial sky must contain one native visual, not invented LODs")
+    lod = lods[0]
+    geometry = geometries.get(lod.get("geometry"))
+    if geometry is None or geometry.get("kind") != "static-world-object" or counts.get("sky_geometries") != 1:
+        raise ValueError("sky references an unknown native static mesh")
+    segments = geometry.get("segments", [])
+    draw_states, slots = lod.get("sky_render_states"), lod.get("material_slots")
+    if not isinstance(draw_states, list) or len(draw_states) != len(segments) or not isinstance(slots, list):
+        raise ValueError("sky segment states do not cover the native mesh")
+    for segment, actual in zip(segments, draw_states):
+        slot = segment.get("material_slot")
+        if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot < len(slots) or slots[slot] not in materials:
+            raise ValueError("sky segment references an unknown material")
+        material_name = materials[slots[slot]]["resource"]["name_hash"]
+        expected = states.get(material_name)
+        if expected is None or any(actual.get(k) != v for k, v in expected.items()):
+            raise ValueError("sky segment state disagrees with native material evidence")
+        if any(actual.get(k) != v for k, v in {"sky": True, "depth_compare": "less_equal",
+                                               "fog_enabled": False, "editor_shade_faces": False}.items()):
+            raise ValueError("sky segment changes the verified native pass state")
 
 
 def _skeleton_report(skeleton: Any) -> dict[str, object] | None:
@@ -468,6 +555,7 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
         preview_path = _safe_relative_path(root, preview.get("file"), "texture.preview.file")
         if _file_sha256(preview_path) != preview.get("sha256"):
             raise ValueError("editor scene texture preview SHA-256 mismatch")
+        _validate_native_texture_mips(root, texture)
 
     if manifest.get("profile_id") == AREA42_PROFILE and manifest.get("map_name") == AREA42_MAP:
         for key, expected in (AREA42_V4_COUNTS if schema["version"] >= 4 else AREA42_COUNTS).items():
@@ -487,7 +575,9 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
             raise ValueError("Area 42 geometry count mismatch")
 
     if schema["version"] >= 4:
+        _validate_sky_manifest(manifest)
         validate_complete_scene(manifest, payload)
+        validate_objective_report(manifest)
 
     return {
         "schema_version": schema["version"],
@@ -499,8 +589,65 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
     }
 
 
-def _material_entry(material: NativeMaterial) -> dict[str, object]:
+def _binding_entry(binding: TextureBinding | None) -> dict[str, object] | None:
+    if binding is None:
+        return None
+    return {
+        "offset": binding.offset, "raw_hex": binding.raw_bytes.hex(),
+        "format_word": binding.format_word, "format": binding.format_name,
+        "mip_levels": binding.mip_levels, "width": binding.width, "height": binding.height,
+        "texture": f"texture:{binding.texture_hash:08x}",
+    }
+
+
+def _validate_native_texture_mips(root: Path, texture: dict[str, object]) -> None:
+    """New mip sidecars are checked; older top-level-only scenes stay readable."""
+    from PIL import Image
+
+    preview = texture["preview"]
+    mips = preview.get("native_mips")
+    if mips is None:
+        return
+    native = texture.get("native")
+    if not isinstance(native, dict) or not isinstance(mips, list) or not mips:
+        raise ValueError("editor scene native mip chain is invalid")
+    width = _require_int(native, "width", "texture.native")
+    height = _require_int(native, "height", "texture.native")
+    count = _require_int(native, "mip_levels", "texture.native")
+    if width < 1 or height < 1 or count < 1 or count > max(width, height).bit_length() or len(mips) != count:
+        raise ValueError("editor scene native mip dimensions or count are invalid")
+    cursor = 0
+    for index, mip in enumerate(mips):
+        if not isinstance(mip, dict) or mip.get("level") != index:
+            raise ValueError("editor scene native mip levels are not consecutive")
+        expected = (max(1, width >> index), max(1, height >> index))
+        if (mip.get("width"), mip.get("height")) != expected:
+            raise ValueError("editor scene native mip dimensions disagree with the original chain")
+        path = _safe_relative_path(root, mip.get("file"), "texture.preview.native_mips.file")
+        if _file_sha256(path) != mip.get("sha256"):
+            raise ValueError("editor scene native mip SHA-256 mismatch")
+        with Image.open(path) as image:
+            if image.size != expected:
+                raise ValueError("editor scene native mip PNG was resized")
+        offset = _require_int(mip, "native_byte_offset", "texture.native_mip")
+        size = _require_int(mip, "native_byte_length", "texture.native_mip")
+        if offset != cursor or size < 1:
+            raise ValueError("editor scene native mip provenance has a gap or overlap")
+        cursor += size
+        if index == 0 and any(mip.get(key) != preview.get(key) for key in ("file", "sha256")):
+            raise ValueError("editor scene preview does not use the original highest-resolution mip")
+    resource = texture.get("resource")
+    if not isinstance(resource, dict) or cursor != resource.get("size"):
+        raise ValueError("editor scene native mip provenance does not span the original texture")
+
+
+def _material_entry(
+    material: NativeMaterial, bindings: tuple[TextureBinding | None, ...] | None = None,
+) -> dict[str, object]:
     binding = material.binding
+    bindings = bindings if bindings is not None else (binding, None, None, None)
+    if len(bindings) != 4:
+        raise ValueError("native material must preserve exactly four texture stages")
     return {
         "id": f"material:{material.resource.name_hash:08x}",
         "resource": _resource(material.resource),
@@ -508,6 +655,8 @@ def _material_entry(material: NativeMaterial) -> dict[str, object]:
         "render_flags": material.render_flags,
         "render_state": material_render_state(material),
         "actor_render_state": actor_material_render_state(material),
+        "actor_material": native_material_evidence(material, kind="actor"),
+        "native_sampler": native_sampler_state(material),
         "native_material_evidence": native_material_evidence(material, kind="shared-resource"),
         "raw_hex": material.raw_bytes.hex(),
         "sampler": {
@@ -520,20 +669,81 @@ def _material_entry(material: NativeMaterial) -> dict[str, object]:
             ),
         },
         "binding_pointer_field": material.binding_pointer_field,
-        "binding": (
-            {
-                "offset": binding.offset,
-                "raw_hex": binding.raw_bytes.hex(),
-                "format_word": binding.format_word,
-                "format": binding.format_name,
-                "mip_levels": binding.mip_levels,
-                "width": binding.width,
-                "height": binding.height,
-                "texture": f"texture:{binding.texture_hash:08x}",
-            }
-            if binding is not None
-            else None
-        ),
+        "binding": _binding_entry(binding),
+        "texture_stages": [
+            {"stage": stage, "binding_pointer_field": material.resource.offset + 0x6C + 4 * stage,
+             "binding": _binding_entry(stage_binding)}
+            for stage, stage_binding in enumerate(bindings)
+        ],
+        "texture_stage_status": "native-dependencies-resolved; secondary-shader-sampling-not-yet-rendered",
+    }
+
+
+def _collect_texture_bindings(reader, material_records):
+    """Resolve every material stage before any texture export, including sky."""
+    material_bindings = {}
+    texture_bindings = {}
+    for identity, material in material_records.items():
+        stages = decode_material_texture_bindings(reader, material.resource)
+        material_bindings[identity] = stages
+        for binding in stages:
+            if binding is None:
+                continue
+            previous = texture_bindings.get(binding.texture_hash)
+            if previous is not None and (
+                previous.format_word, previous.width, previous.height, previous.mip_levels,
+            ) != (binding.format_word, binding.width, binding.height, binding.mip_levels):
+                raise ValueError("one texture identity has conflicting native mip metadata")
+            texture_bindings[binding.texture_hash] = binding
+    return material_bindings, texture_bindings
+
+
+def _write_texture_entries(reader, texture_bindings, output: Path):
+    """Write authored mip images; keep the old level-0 preview path compatible."""
+    (output / "textures").mkdir(parents=True, exist_ok=True)
+    entries = []
+    for texture_hash, binding in sorted(texture_bindings.items()):
+        payload = texture_payload(reader, binding)
+        levels = texture_mip_layout(binding)
+        images = decode_texture_mip_levels(reader, binding)
+        mips = []
+        for level, image in zip(levels, images, strict=True):
+            index = level["level"]
+            filename = f"{texture_hash:08x}.png" if index == 0 else f"{texture_hash:08x}.mip{index}.png"
+            path = Path("textures") / filename
+            encoded = io.BytesIO()
+            image.save(encoded, format="PNG", optimize=False)
+            png = encoded.getvalue()
+            (output / path).write_bytes(png)
+            offset, size = level["byte_offset"], level["byte_length"]
+            mips.append({
+                "level": index, "width": image.width, "height": image.height,
+                "file": path.as_posix(), "format": "RGBA8 PNG", "sha256": _sha256(png),
+                "native_byte_offset": offset, "native_byte_length": size,
+                "native_sha256": _sha256(payload[offset:offset + size]),
+            })
+        entries.append({
+            "id": f"texture:{texture_hash:08x}", "resource": _resource(binding.texture_resource),
+            "native": {"format_word": binding.format_word, "format": binding.format_name,
+                       "mip_levels": binding.mip_levels, "width": binding.width, "height": binding.height},
+            "preview": {**{key: mips[0][key] for key in ("file", "format", "sha256")}, "native_mips": mips},
+            "conversion": {"source": "original-retail-texture-bytes", "base_level": 0,
+                           "max_level": len(mips) - 1, "resized": False,
+                           "generated_mipmaps": False, "ai_generated": False},
+        })
+    return entries
+
+
+def _texture_dependency_report(material_bindings):
+    primary = {b[0].texture_hash for b in material_bindings.values() if b[0] is not None}
+    textures = {item.texture_hash for bindings in material_bindings.values() for item in bindings if item is not None}
+    return {
+        "status": "all-four-native-stages-resolved",
+        "materials": len(material_bindings), "textures": len(textures),
+        "bound_stages": [sum(bindings[stage] is not None for bindings in material_bindings.values()) for stage in range(4)],
+        "secondary_only_textures": len(textures - primary),
+        "provenance": "material +0x6C/+0x70/+0x74/+0x78 relocations; four-slot initialization at 0xE60BC",
+        "remaining_unknowns": ["secondary reflection/shader texture sampling is preserved as a dependency, not yet rendered"],
     }
 
 
@@ -604,8 +814,12 @@ def export_area42_editor_scene(
     actors = read_actor_visuals(world)
     fixtures = read_building_fixtures(world)
     environment = read_environment_scene(scene.reader)
+    environment_contract = environment_report(environment)
+    sky_contract = environment_contract["sky"]["draw_contract"]
+    sky_placements = [_sky_placement_entry(environment, sky_contract)]
     scatter = read_scatter_scene(scene)
     spawns = read_spawn_scene(scene.reader, world)
+    objectives = read_objectives(world, spawns)
     landing = read_landing_visual_scene(scene.reader, spawns)
     human_archetypes = {
         p.actor.resource.name_hash: humans.archetypes[p.actor.resource.name_hash]
@@ -721,6 +935,8 @@ def export_area42_editor_scene(
     fixture_lods = [lod for placed in fixtures.placements for lod in placed.fixture.lods]
     static_meshes.update({part.visual.mesh.resource.name_hash: part.visual.mesh
                          for lod in fixture_lods for part in lod.parts})
+    sky_visual = environment.sky.visuals[0]
+    static_meshes[sky_visual.mesh.resource.name_hash] = sky_visual.mesh
     for _, mesh in sorted(static_meshes.items()):
         geometry_entries.append(_static_geometry_entry(mesh, buffer))
     human_meshes = {
@@ -769,7 +985,6 @@ def export_area42_editor_scene(
             })
 
     material_records: dict[int, NativeMaterial] = {}
-    texture_images: dict[int, tuple[object, object]] = {}
     placement_lod_slots: dict[tuple[int, int], list[str]] = {}
     placement_lod_states: dict[tuple[int, int], list[dict[str, object]]] = {}
     for placement_index, placement in enumerate(scene.placements):
@@ -784,69 +999,24 @@ def export_area42_editor_scene(
             for slot in slots:
                 material = slot.material
                 material_records[material.resource.name_hash] = material
-                binding = material.binding
-                if binding is not None and binding.texture_hash not in texture_images:
-                    texture_images[binding.texture_hash] = (
-                        binding,
-                        decode_texture_top_level(scene.reader, binding),
-                    )
 
     all_rigid_lods = [lod for actor in actors.archetypes.values() for lod in actor.lods] + list(landing.lods) + fixture_lods
     for rigid_lod in all_rigid_lods:
         for lod in rigid_lod.parts:
             for material in lod.visual.materials:
                 material_records[material.resource.name_hash] = material
-                binding = material.binding
-                if binding is not None and binding.texture_hash not in texture_images:
-                    texture_images[binding.texture_hash] = (
-                        binding,
-                        decode_texture_top_level(scene.reader, binding),
-                    )
 
     for actor in skin_archetypes.values():
         for lod in actor.lods:
             for material in lod.visual.materials:
                 material_records[material.resource.name_hash] = material
-                binding = material.binding
-                if binding is not None and binding.texture_hash not in texture_images:
-                    texture_images[binding.texture_hash] = (
-                        binding, decode_texture_top_level(scene.reader, binding)
-                    )
     for batch in scatter.batches:
         material = batch.material
         material_records[material.resource.name_hash] = material
-        binding = material.binding
-        if binding is not None and binding.texture_hash not in texture_images:
-            texture_images[binding.texture_hash] = (binding, decode_texture_top_level(scene.reader, binding))
-
-    output.mkdir(parents=True, exist_ok=True)
-    texture_dir = output / "textures"
-    texture_dir.mkdir(exist_ok=True)
-    texture_entries: list[dict[str, object]] = []
-    for texture_hash, (binding, image) in sorted(texture_images.items()):
-        encoded = io.BytesIO()
-        image.save(encoded, format="PNG", optimize=False)
-        png = encoded.getvalue()
-        relative_path = Path("textures") / f"{texture_hash:08x}.png"
-        (output / relative_path).write_bytes(png)
-        texture_entries.append(
-            {
-                "id": f"texture:{texture_hash:08x}",
-                "resource": _resource(binding.texture_resource),
-                "native": {
-                    "format_word": binding.format_word,
-                    "format": binding.format_name,
-                    "mip_levels": binding.mip_levels,
-                    "width": binding.width,
-                    "height": binding.height,
-                },
-                "preview": {
-                    "file": relative_path.as_posix(),
-                    "format": "RGBA8 PNG",
-                    "sha256": _sha256(png),
-                },
-            }
-        )
+    for material in sky_visual.materials:
+        material_records[material.resource.name_hash] = material
+    material_bindings, texture_bindings = _collect_texture_bindings(scene.reader, material_records)
+    texture_entries = _write_texture_entries(scene.reader, texture_bindings, output)
 
     placements: list[dict[str, object]] = []
     for placement_index, placement in enumerate(scene.placements):
@@ -888,6 +1058,7 @@ def export_area42_editor_scene(
         )
 
     object_placements: list[dict[str, object]] = []
+    light_role_cache: dict[tuple[int, int], dict[str, object]] = {}
     for placement in world.placements:
         actor = placement.actor
         human = skin_archetypes.get(actor.resource.name_hash) if actor else None
@@ -966,8 +1137,19 @@ def export_area42_editor_scene(
         )
         if rigid is not None:
             object_placements[-1]["lods"] = [_parts_lod(lod) for lod in rigid.lods]
+        owning_visual = rigid.visual_resource if rigid else human.actor.lod_resource if human else None
+        role = None
+        if owning_visual is not None:
+            key = (owning_visual.load_group, owning_visual.offset)
+            if key not in light_role_cache:
+                light_role_cache[key] = visual_light_role(scene.reader, owning_visual)
+            role = light_role_cache[key]
+        _inherit_native_light_role(object_placements[-1], role)
 
     _append_building_fixture_parts(object_placements, fixtures)
+    # Fixture subparts still belong to the original native instance light context.
+    for placed in object_placements:
+        _inherit_native_light_role(placed, placed["native_light_role"])
 
     landing_placements = [{"id": "landing-visual:" + p.label,
                            "editor_collection": "landing-sites",
@@ -979,10 +1161,17 @@ def export_area42_editor_scene(
                            "matrix_row_major_f32": p.matrix.reshape(-1).tolist(),
                            "lods": [_parts_lod(lod) for lod in landing.lods]}
                           for p in landing.placements]
+    landing_light_role = visual_light_role(scene.reader, landing.lod_resource)
+    for placed in landing_placements:
+        _inherit_native_light_role(placed, landing_light_role)
     rendered_ids = {p["id"] for p in object_placements if p["lods"]}
     scene_markers = [m for m in spawns.scene_markers
                      if not m.get("world_placement") or
                      f"world-placement:{m['world_placement']['bucket_index']:02d}:{m['world_placement']['index']:04d}" not in rendered_ids]
+    scene_markers.extend({"id": marker["id"], "kind": marker["kind"],
+                          "label": marker["name"], "status": marker["placement_status"],
+                          "position_f32": marker["position"], "native": marker}
+                         for marker in objectives.scene_markers)
 
     def collection_meshes(collection: str) -> set[str]:
         return {part["geometry"] for p in object_placements if p["editor_collection"] == collection
@@ -1032,7 +1221,14 @@ def export_area42_editor_scene(
         "scene_markers": len(scene_markers),
         "landing_sites": sum(m["kind"] == "landing-site" for m in spawns.scene_markers),
         "spawn_definitions": len(spawns.spawn_definitions),
+        "objective_definitions": len(objectives.objectives),
+        "authored_pickups": len(objectives.collectibles),
+        "collectible_probes": objectives.report["counts"]["probes"],
+        "mission_debris_pickups": objectives.report["counts"]["mission_debris"],
+        "objective_region_markers": len(objectives.scene_markers),
         "landing_visual_placements": len(landing_placements),
+        "sky_placements": len(sky_placements),
+        "sky_geometries": 1,
         "renderable_world_placements": len(rendered_ids),
         "selected_building_fixtures": len(fixtures.placements),
         "geometries": len(geometry_entries),
@@ -1107,15 +1303,17 @@ def export_area42_editor_scene(
         "counts": counts,
         "geometries": geometry_entries,
         "materials": [
-            _material_entry(material)
+            _material_entry(material, material_bindings[material.resource.name_hash])
             for _, material in sorted(material_records.items())
         ],
         "textures": texture_entries,
+        "texture_dependency_report": _texture_dependency_report(material_bindings),
         "placements": placements,
         "object_placements": object_placements,
         "landing_placements": landing_placements,
+        "sky_placements": sky_placements,
         "landing_visual_validation": landing.report,
-        "environment": environment_report(environment),
+        "environment": environment_contract,
         "building_fixture_validation": {
             "inventory": list(fixtures.inventory),
             "selected_fixture_count": len(fixtures.placements),
@@ -1160,6 +1358,12 @@ def export_area42_editor_scene(
         "entity_tags": list(spawns.tags),
         "script_calls": list(spawns.script_calls),
         "spawn_validation": spawns.report,
+        "objective_definitions": list(objectives.objectives),
+        "collectible_placements": list(objectives.collectibles),
+        "mission_registrations": list(objectives.mission_registrations),
+        "objective_script_calls": list(objectives.script_calls),
+        "objective_visual_dependencies": list(objectives.visual_dependencies),
+        "objective_validation": objectives.report,
         "human_archetypes": [
             {
                 "resource": _resource(actor.actor.resource),
@@ -1189,10 +1393,10 @@ def export_area42_editor_scene(
             "Viewport orientation and remaining render states still require a same-location retail comparison.",
             "Native double-sided flags are preserved; the preview disables culling until front-face parity is verified.",
             "Skinned and segmented actors show their authored reference pose; runtime animation, component visibility and held attachments are not applied.",
-            "Scatter wind and distance fade are preserved but not simulated; translucent instances are not sorted individually in the preview.",
+            "Scatter wind and distance fade are preserved but not simulated. The viewport depth-sorts translucent instances, not individual triangles; exact retail draw ordering remains unverified.",
             "Native landing visuals use authored region centers; runtime collision projection, activation and animation are not applied.",
             "Authored placements and script registrations do not imply simultaneous runtime activation.",
-            "Environment lighting, fog, runtime shadows and same-location visual parity are not yet verified.",
+            "First sky visual initial draw and authored sun constants are verified; second sky visual, animated UVs, live camera light directions, per-object effects, fog integration and runtime shadows remain unresolved.",
             "Collision, mission execution, destruction-state editing, streaming simulation and native writes are outside schema v4.",
         ],
     }

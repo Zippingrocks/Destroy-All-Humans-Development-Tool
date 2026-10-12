@@ -125,8 +125,49 @@ The applicable state belongs to each segment, not merely its material.
 
 The initial terrain material walk resets effective UV transforms to identity
 (`0xE5790 -> 0xE52C0 -> 0xE5A40`, scale 1,1). Compiled UVs must not receive the
-original authoring transform again. Non-terrain matrix updates, runtime scale
-callbacks and shader paths outside the verified basic subset remain explicit unknowns.
+original authoring transform again. Initial actor and sky materials have a different
+contract: their loader at `0xE60A0` resolves texture handles without rewriting the
+matrix, and `0xE5F30` copies it when cloning. Their original eight UV-transform
+floats therefore remain effective at initial load. Animation and script updates
+(`0xE5970`), shared-material changes and shader paths outside the verified basic
+subset remain explicit unknowns; this is not a claim that UVs never change in-game.
+
+## Original textures, mip levels and material dependencies
+
+The preview uses original retail texture bytes, not AI-generated assets or
+upscaled replacements. Every supported mip level is decoded independently from
+its authored byte span; the highest native level is never replaced by a reduced
+preview. PNG conversion does not resize pixels or generate missing mip levels.
+Supported formats are BC1, BC3, swizzled ARGB8, linear ARGB8 and linear ARGB4444.
+Alpha is preserved at each level. Partial native chains remain partial.
+
+A read-only audit of all material resources in the Area 42 load groups found
+624 unique primary textures and 14 additional secondary-only textures: 638 in
+total. Slots 0 and 1 have 1,948 and 166 bound occurrences respectively; slots 2
+and 3 are unbound. These are full resource-inventory counts, not a claim that
+every asset is drawn simultaneously or used by the exported scene. The largest
+ordinary game textures observed are 256 by 256; six 640 by 480 linear images
+are separate full-screen assets, not higher-resolution terrain replacements.
+
+All four material pointers at `+0x6C/+0x70/+0x74/+0x78` are resolved and retained
+in `materials[].texture_stages`, including null slots, pointer-field offsets and
+binding/texture provenance. `texture_dependency_report` counts the dependencies
+actually included in each export. Secondary textures are preserved even where
+their reflective/special shader sampling is not yet reproduced; resolving an
+asset is distinct from implementing its renderer.
+
+`textures[].preview.native_mips` records each PNG's level, dimensions and hash,
+alongside its original byte offset, length and hash. Level zero is the same file
+as the legacy `preview.file`. Validation checks the authored level count,
+dimension progression, contiguous byte spans and output hashes. The UI uploads
+these levels directly without automatic mip generation.
+
+`materials[].native_sampler` carries the verified stage-zero sampler: linear
+minification, normally linear magnification and linear mip filtering, with the
+original binding's LOD bias. Flag `0x100000` instead selects nearest magnification
+and disables mip filtering; single-level textures also disable mip filtering.
+The native U/V clamp flags remain distinct from wrapping. These contracts are
+traced through `0xE6692`, `0xE66A7` and `0xE5CDC`, not chosen as a visual fix.
 
 ## CryptoEditor model
 
@@ -166,12 +207,14 @@ TrenchBroom entity for a Pandemic resource whose runtime contract is different.
   navigation, roads, streaming, and load-group behavior.
 - Prove an unchanged native save before enabling package mutation.
 
-## Environment: next preview milestone
+## Environment: authored preview and runtime limits
 
-The following is read-only resource and executable evidence, not implemented
-schema-v4 atmosphere support or proof of game-exact rendering. All addresses are
-for the pinned DAH1 US Xbox retail executable; resident offsets refer to the
-decompressed Area 42 load group 0. The existing fog/sky sibling nodes are not
+The following read-only resource and executable evidence now supports the first
+native sky visual and a restricted authored-sun preview for basic rigid shaders.
+It does not establish same-camera retail parity or a complete atmosphere model.
+Fog remains decoded evidence, not a generic radial effect applied by the editor.
+All addresses are for the pinned DAH1 US Xbox retail executable; resident offsets
+refer to decompressed Area 42 load group 0. The fog/sky sibling nodes are not
 ordinary scenery placements.
 
 ### Native ownership and authored values
@@ -192,8 +235,26 @@ relocations must still be checked. The `Fog` and `skybox` sibling nodes have no
 relocated visual at `+0x14`; dropping them as empty objects misses World's direct
 environment ownership. The three sun payloads have type `0x438B6A74`;
 `0xE9800` registers its factory and `0xE4DB0` copies payload `+0xB4..+0xD8`
-into runtime `+0x1C..+0x40`. Preserve the separate roles and raw fields: the
-diffuse/ambient/intensity consumer semantics have not yet been fully traced.
+into runtime `+0x1C..+0x40`. The consumer at `0xF7C90` and constant uploads at
+`0xEB0C3..0xEB10C` identify payload `+0xB4` as directional diffuse color and
+`+0xCC` as ambient color. Payload `+0xC0` is not the effective direction: the
+sun-node update replaces it with the node's transformed positive Z basis.
+The `+0xD8` tail remains uninterpreted.
+
+`environment.lighting_contract` preserves separate static and dynamic authored
+lights. The owning visual's `+0x9C` bit 4 selects the dynamic role; otherwise
+the native instance loader selects static. Attached components inherit that
+selection. For the verified basic rigid shader and rigid unit-scale bases, the
+preview uses `max(dot(normal,direction),0) * diffuse + ambient`, followed by
+material diffuse/additive colors and the basic pixel shader. It does not add
+directional lighting to terrain's already-authored packed vertex colors.
+
+The default untinted draw has shader constants `c20=(1,1,1,1)` and
+`c19=(0,0,0,0)`; per-object effects can replace them. Camera updates also
+overwrite the sun direction using an interpolated camera-light quaternion.
+Thus authored sun data is a reproducible preview basis, not the game's live
+lighting state. Skin, non-rigid and reflective/special shader paths retain
+explicit preview fallbacks.
 
 Fog loader `0xF3630` establishes the following fields:
 
@@ -259,7 +320,7 @@ position/extent. `World.Update` at `0xE5120` supplies the graphics-global
 `+0xEC` parent matrix. These endpoints are not unconditional editor settings:
 live parent selection, transitions, cinematics and scripted overrides remain
 unimplemented. `dah1/environment.py` decodes the actual Lua instructions and
-native resources, with 18 pinned executable spans and changed-input tests.
+native resources, with pinned executable spans and changed-input tests.
 
 Area 42 ignition also calls `environment.SetParam(0,"LightLevel",1)` at Lua
 PCs 438-443. The XBE dispatcher at `0x5A6A0` recognizes hash `0x53C40C0E`
@@ -286,11 +347,20 @@ placement depends on runtime camera values and the controller's vector; it is
 not a second ordinary static placement. Exact second-pass scaling, occlusion,
 material state and compositing remain to be validated before preview support.
 
-The next test should pin this complete environment-reference chain, fog color,
-camera overrides, plane equation and both sky dependencies, then compare one
-matched retail camera in both alien and UFO modes. Extend the neutral scene
-only after those checks; fog, sky and light decoding must preserve unresolved
-fields rather than invent an atmosphere. Useful executable span SHA-256 pins:
+The first visual is now exported in `sky_placements` with its original mesh,
+materials and UV matrix, including the native 4x scale / -1.5 offset where
+present. `environment.sky.draw_contract` records its camera-relative draw:
+remove view translation, retain the real projected depth, use LEQUAL with depth
+writes disabled, and draw before the native world geometry. This is not a
+replacement sphere or an artificial far-plane projection. The first visual's
+zero diffuse color reduces its initial vertex color to the native material's
+additive color; shader 0 then applies `clamp(2 * texture.rgb * vertex.rgb)`.
+Opaque/additive pass state and GREATER alpha tests are retained per segment.
+
+The second visual is preserved as a dependency, not fabricated as another sky
+placement. Its camera-far scaling and occlusion-driven opacity remain open.
+Matched retail-camera tests in alien and UFO modes are still required to validate
+live sky, lighting and fog together. Useful executable span SHA-256 pins:
 
 | Start / byte count | Evidence | SHA-256 |
 | --- | --- | --- |
@@ -359,10 +429,19 @@ affect 330 placements, and ten non-unit-opacity materials affect 100 placements.
 Basic rigid shader opacity is applied without assuming the same shader path
 for skins or the reflective material family.
 
-The editor still does not reconstruct native actor lighting, effective runtime
-UV updates, reflective/special shaders, per-draw cull orientation, transparent
-depth ordering, gameplay fades or shadow passes. It does not multiply white
-actor vertices by two and call that native lighting. Decoded fog/sun/sky data
-is exported as evidence only; generic editor fog stays disabled. A textured
-reference remains a research preview, not verified framebuffer or gameplay parity.
+`actor_material` now carries initial effective UVs, original material colors,
+opacity and pixel-shader identity independently from raster state. For the
+verified rigid subset, authored lighting is evaluated before interpolation and
+the native basic shader's RGB factor of two is applied after texture sampling;
+it is not a global brightness multiplier on white vertices. Blended actor
+batches are sorted by placement/batch center from the current camera, not by
+every transparent triangle or the game's complete draw queue.
+
+Runtime UV/color animation, camera-driven sun changes, reflective/special
+shaders and their secondary texture sampling, per-draw cull orientation,
+transparent intersections, gameplay fades, fog application and shadow passes
+remain unresolved. Landing visuals still lack runtime collision projection,
+and authored entities do not imply mission activation. The first sky and
+authored-sun preview narrow the gap, but a textured reference remains a research
+preview, not verified framebuffer or gameplay parity.
 

@@ -12,6 +12,7 @@ import numpy as np
 from dahdev.dah1.world import (
     SEGMENTED_VISUAL_TYPE, STATIC_VISUAL_TYPE, _default_static_visual,
     classify_editor_collection,
+    _semantic_actor_strings,
     decode_packed_yaw_quaternion,
     decode_packed_quaternion,
     instance_list_records,
@@ -62,6 +63,14 @@ class LegacyVisualSafetyTests(unittest.TestCase):
 
 
 class EditorCollectionTests(unittest.TestCase):
+    def test_pickup_names_are_native_objects_not_unnamed_catalog_entries(self):
+        self.assertEqual(_semantic_actor_strings(b"\0PowerupType\0pu_probe\0"),
+                         ("PowerupType", "pu_probe"))
+        self.assertEqual(_semantic_actor_strings(b"\0PowerupType\0pu_ufo_debris\0"),
+                         ("PowerupType", "pu_ufo_debris"))
+        self.assertEqual(classify_editor_collection("PowerupType", "pu_probe"), "pickups")
+        self.assertEqual(classify_editor_collection("PowerupType", None), "pickups")
+
     def test_preserves_native_classification_as_editor_grouping(self) -> None:
         self.assertEqual(
             classify_editor_collection("WorldObjectType", "b_sml_barracks_small"),
