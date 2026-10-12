@@ -50,7 +50,8 @@ are established.
   previews, preserved vertex/index bytes, and per-payload provenance hashes.
 - Native Area 42 world reconstruction containing all 41 placement buckets and
   849 object records, including 18 building/world-structure placements at their
-  retail transforms and 17 directly resolved static visuals.
+  retail transforms, all 18 resolved building visuals, and all 23 placed
+  PropType set-piece visuals (41 renderable structure/set-dressing placements).
 - Executable-backed identification of the terrain stream as
   `FLOAT3, FLOAT2, D3DCOLOR`; CryptoEditor preserves the packed diffuse color
   and uses its RGB channels for native terrain modulation.

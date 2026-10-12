@@ -58,6 +58,8 @@ class EditorSceneValidationTests(unittest.TestCase):
                 "world_placements": 1,
                 "building_placements": 1,
                 "building_renderable_placements": 1,
+                "prop_placements": 0,
+                "prop_renderable_placements": 0,
             },
             "geometries": [
                 {

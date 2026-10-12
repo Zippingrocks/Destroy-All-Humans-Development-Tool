@@ -86,7 +86,7 @@ Schema v2 separates:
 - 92 terrain placements and their two native LODs;
 - 849 world-instance placements in 41 native buckets;
 - actor archetype metadata for every placement;
-- renderable building meshes, materials, textures, and native transforms;
+- renderable building and PropType set-piece meshes, materials, textures, and native transforms;
 - friendly editor collections that do not replace native class identity.
 
 Folders, layers, brush construction, procedural placement, and other authoring tools may
@@ -96,8 +96,9 @@ TrenchBroom entity for a Pandemic resource whose runtime contract is different.
 
 ## Remaining research gates
 
-- Decode the guard tower's segmented visual material ownership and all destruction states.
-- Promote prop, vehicle, human, gameplay, and population visual families independently.
+- Decode and expose all guard-tower destruction states; v2 currently displays its intact
+  state through the native segmented shared-material block.
+- Promote vehicle, human, gameplay, and population visual families independently.
 - Resolve collision ownership and links instead of deriving collision from render meshes.
 - Decode remaining material blend, alpha-test, lighting, and texture-transform states.
 - Map mission, region, navigation, roads, streaming, and load-group relationships.

@@ -48,9 +48,10 @@
   without converting them into brushes or a heightfield.
 - [x] Parse the native world instance database: 41 buckets, 849 placements, and
   the 18 retail building/world-structure placements present in Area 42.
-- [x] Follow the verified placement -> actor archetype -> visual LOD -> static
-  mesh/material chain for 17 directly renderable building placements and show
-  them at their retail transforms in the Area 42 reference scene.
+- [x] Follow the verified placement -> actor archetype -> visual LOD/direct visual
+  -> static mesh/material chain for all 18 building placements and all 23 placed
+  PropType set pieces, including the guard tower's segmented shared-material path,
+  and show all 41 at their retail transforms in the Area 42 reference scene.
 - [x] Group native placements by DAH semantic class in the map-elements UI while
   retaining native bucket/record identity and unresolved records.
 - [ ] Add explicit DAH terrain, reference mesh, object, and unknown-data node types.

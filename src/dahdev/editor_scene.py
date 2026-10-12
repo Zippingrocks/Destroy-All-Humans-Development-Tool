@@ -38,9 +38,13 @@ AREA42_COUNTS = {
     "world_buckets": 41,
     "world_placements": 849,
     "building_placements": 18,
-    "building_renderable_placements": 17,
-    "building_geometries": 7,
-    "geometries": 191,
+    "building_renderable_placements": 18,
+    "building_geometries": 8,
+    "prop_placements": 23,
+    "prop_renderable_placements": 23,
+    "prop_geometries": 11,
+    "renderable_structure_placements": 41,
+    "geometries": 203,
     "lod0_vertices": 122956,
     "lod0_triangles": 103634,
     "lod1_vertices": 16240,
@@ -255,6 +259,8 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
 
     building_count = 0
     renderable_building_count = 0
+    prop_count = 0
+    renderable_prop_count = 0
     for placement in object_placements:
         if not isinstance(placement, dict):
             raise ValueError("editor scene object placement must be an object")
@@ -268,6 +274,10 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
             building_count += 1
             if lods:
                 renderable_building_count += 1
+        elif placement.get("editor_collection") == "props":
+            prop_count += 1
+            if lods:
+                renderable_prop_count += 1
         for lod in lods:
             if not isinstance(lod, dict) or lod.get("geometry") not in geometry_ids:
                 raise ValueError("editor scene object LOD references an unknown geometry")
@@ -277,6 +287,12 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
         counts, "building_renderable_placements", "counts"
     ):
         raise ValueError("editor scene renderable building placement count mismatch")
+    if prop_count != _require_int(counts, "prop_placements", "counts"):
+        raise ValueError("editor scene prop placement count mismatch")
+    if renderable_prop_count != _require_int(
+        counts, "prop_renderable_placements", "counts"
+    ):
+        raise ValueError("editor scene renderable prop placement count mismatch")
 
     textures = manifest.get("textures")
     if not isinstance(textures, list):
@@ -457,9 +473,21 @@ def export_area42_editor_scene(
         )
         == "buildings"
     ]
+    prop_placements_native = [
+        placement
+        for placement in world.placements
+        if placement.actor is not None
+        and classify_editor_collection(
+            placement.actor.native_class, placement.actor.asset_name
+        )
+        == "props"
+    ]
+    renderable_structure_placements_native = (
+        building_placements_native + prop_placements_native
+    )
     static_meshes = {
         lod.visual.mesh.resource.name_hash: lod.visual.mesh
-        for placement in building_placements_native
+        for placement in renderable_structure_placements_native
         for lod in placement.actor.lods
     }
     for _, mesh in sorted(static_meshes.items()):
@@ -484,7 +512,7 @@ def export_area42_editor_scene(
                         decode_texture_top_level(scene.reader, binding),
                     )
 
-    for placement in building_placements_native:
+    for placement in renderable_structure_placements_native:
         for lod in placement.actor.lods:
             for material in lod.visual.materials:
                 material_records[material.resource.name_hash] = material
@@ -657,7 +685,28 @@ def export_area42_editor_scene(
         "building_renderable_placements": sum(
             bool(placement.actor.lods) for placement in building_placements_native
         ),
-        "building_geometries": len(static_meshes),
+        "building_geometries": len(
+            {
+                lod.visual.mesh.resource.name_hash
+                for placement in building_placements_native
+                for lod in placement.actor.lods
+            }
+        ),
+        "prop_placements": len(prop_placements_native),
+        "prop_renderable_placements": sum(
+            bool(placement.actor.lods) for placement in prop_placements_native
+        ),
+        "prop_geometries": len(
+            {
+                lod.visual.mesh.resource.name_hash
+                for placement in prop_placements_native
+                for lod in placement.actor.lods
+            }
+        ),
+        "renderable_structure_placements": sum(
+            bool(placement.actor.lods)
+            for placement in renderable_structure_placements_native
+        ),
         "geometries": len(geometry_entries),
         "materials": len(material_records),
         "textures": len(texture_entries),
@@ -740,8 +789,7 @@ def export_area42_editor_scene(
             "The high byte of terrain segment raw_flags is preserved without assigned semantics.",
             "Material flags other than verified U/V clamp bits are preserved without assigned semantics.",
             "Viewport orientation and remaining render states still require a same-location retail comparison.",
-            "The guard tower's segmented/destructible visual has its placement and archetype preserved, but its shared material indirection is not yet renderable.",
-            "Non-building world placements preserve their native placement and archetype metadata; their visual mesh families are not yet promoted to renderable schema v2 geometry.",
+            "Buildings and placed PropType set pieces use their native geometry, transforms, materials, and texture bindings; dynamic actor mesh families remain metadata-only.",
             "Collision, missions, destruction-state editing, and streaming are outside schema v2.",
         ],
     }

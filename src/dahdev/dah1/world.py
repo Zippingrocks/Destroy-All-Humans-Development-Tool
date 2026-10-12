@@ -328,6 +328,7 @@ def _decode_static_visual(
     *,
     source_visual_type: int | None = None,
     destruction_state: int | None = None,
+    material_override: tuple[NativeMaterial, ...] | None = None,
 ) -> StaticVisual:
     if resource.type_hash != STATIC_VISUAL_TYPE or resource.size < 0xF0:
         raise ValueError("static visual has an unexpected type or size")
@@ -340,17 +341,20 @@ def _decode_static_visual(
     if mesh is None:
         mesh = decode_static_mesh(reader, mesh_resource)
         mesh_cache[mesh_hash] = mesh
-    material_target = group.relocations.pointers.get(resource.offset + 0xE8)
-    material_table = (
-        reader.resource_by_location(resource.load_group, material_target)
-        if material_target is not None
-        else None
-    )
-    if material_table is None or material_table.type_hash != MATERIAL_TABLE_TYPE:
-        raise ValueError(
-            f"static visual 0x{resource.name_hash:08X} lacks its native material table"
+    if material_override is None:
+        material_target = group.relocations.pointers.get(resource.offset + 0xE8)
+        material_table = (
+            reader.resource_by_location(resource.load_group, material_target)
+            if material_target is not None
+            else None
         )
-    materials = _material_table(reader, material_table)
+        if material_table is None or material_table.type_hash != MATERIAL_TABLE_TYPE:
+            raise ValueError(
+                f"static visual 0x{resource.name_hash:08X} lacks its native material table"
+            )
+        materials = _material_table(reader, material_table)
+    else:
+        materials = material_override
     if any(segment.material_slot >= len(materials) for segment in mesh.segments):
         raise ValueError("static mesh segment material slot is out of range")
     return StaticVisual(
@@ -386,14 +390,44 @@ def _default_static_visual(
     )
     if child is None or child.type_hash != STATIC_VISUAL_TYPE:
         raise ValueError("segmented visual default state is not a static visual")
+    material_override = None
     if child.offset + 0xE8 not in group.relocations.pointers:
-        return None
+        shared = group.relocations.pointers.get(resource.offset + 0xC0)
+        material_table = (
+            group.relocations.pointers.get(shared + 0x30)
+            if shared is not None
+            else None
+        )
+        material_count = (
+            struct.unpack_from("<I", group.data, shared + 0x34)[0]
+            if shared is not None
+            else 0
+        )
+        if material_table is None or material_count == 0:
+            return None
+        materials: list[NativeMaterial] = []
+        for material_index in range(material_count):
+            material_target = group.relocations.pointers.get(
+                material_table + material_index * 4
+            )
+            material_resource = (
+                reader.resource_by_location(resource.load_group, material_target)
+                if material_target is not None
+                else None
+            )
+            if material_resource is None or material_resource.type_hash != MATERIAL_TYPE:
+                raise ValueError(
+                    "segmented visual shared material slot does not resolve to a material"
+                )
+            materials.append(decode_material(reader, material_resource))
+        material_override = tuple(materials)
     return _decode_static_visual(
         reader,
         child,
         mesh_cache,
         source_visual_type=resource.type_hash,
         destruction_state=state,
+        material_override=material_override,
     )
 
 
@@ -404,18 +438,27 @@ def _decode_actor(
     raw = group.data[resource.offset : resource.offset + resource.size]
     native_class, asset_name = _semantic_actor_strings(raw)
     lod_resource = None
+    direct_visual_resource = None
     for field, target in group.relocations.pointers.items():
         if not resource.offset <= field < resource.offset + resource.size:
             continue
         candidate = reader.resource_by_location(resource.load_group, target)
         if candidate is not None and candidate.type_hash == LOD_TYPE:
             lod_resource = candidate
-            break
+        elif (
+            candidate is not None
+            and candidate.type_hash in {STATIC_VISUAL_TYPE, SEGMENTED_VISUAL_TYPE}
+            and direct_visual_resource is None
+        ):
+            direct_visual_resource = candidate
     lods: list[WorldObjectLOD] = []
-    # The first editor milestone resolves the complete placement database but only
-    # promotes building visuals into renderable geometry. Other actor families use
-    # additional mesh layouts which remain represented by their native archetypes.
-    decode_visuals = classify_editor_collection(native_class, asset_name) == "buildings"
+    # Promote placed buildings and structural/set-dressing props. Dynamic actors
+    # remain represented by their native archetypes until their animated layouts
+    # are decoded independently.
+    decode_visuals = classify_editor_collection(native_class, asset_name) in {
+        "buildings",
+        "props",
+    }
     if decode_visuals and lod_resource is not None and lod_resource.size >= 0xCC:
         child_table = group.relocations.pointers.get(lod_resource.offset + 0xC0)
         child_count = struct.unpack_from("<I", group.data, lod_resource.offset + 0xC8)[0]
@@ -433,6 +476,10 @@ def _decode_actor(
             visual = _default_static_visual(reader, child, mesh_cache)
             if visual is not None:
                 lods.append(WorldObjectLOD(index=index, visual=visual))
+    elif decode_visuals and direct_visual_resource is not None:
+        visual = _default_static_visual(reader, direct_visual_resource, mesh_cache)
+        if visual is not None:
+            lods.append(WorldObjectLOD(index=0, visual=visual))
     return ActorArchetype(
         resource=resource,
         native_class=native_class,
