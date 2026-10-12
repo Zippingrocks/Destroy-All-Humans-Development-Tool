@@ -4,16 +4,20 @@ import unittest
 import os
 import struct
 from collections import Counter
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 from dahdev.dah1.world import (
+    SEGMENTED_VISUAL_TYPE, STATIC_VISUAL_TYPE, _default_static_visual,
     classify_editor_collection,
     decode_packed_yaw_quaternion,
     decode_packed_quaternion,
     instance_list_records,
     read_world_scene,
 )
+from dahdev.dah1.container import ResourceRecord
 
 
 class PackedWorldRotationTests(unittest.TestCase):
@@ -36,6 +40,25 @@ class PackedWorldRotationTests(unittest.TestCase):
         value = decode_packed_yaw_quaternion(0x5AD1A5D1)
         self.assertAlmostEqual(float(value[2]), -0.70458, places=4)
         self.assertAlmostEqual(float(value[3]), 0.70952, places=4)
+
+
+class LegacyVisualSafetyTests(unittest.TestCase):
+    def test_segmented_visual_cannot_silently_become_first_component(self):
+        resource = ResourceRecord(0, SEGMENTED_VISUAL_TYPE, 123, 0, 0, 0xD0, 0)
+        # No data needs to be read to know that this legacy return type would
+        # discard the attachment graph, even if the visual has only one part.
+        with self.assertRaisesRegex(ValueError, "actor_visuals.read_actor_visuals"):
+            _default_static_visual(SimpleNamespace(), resource, {})
+
+    def test_proven_simple_static_preview_remains_supported(self):
+        resource = ResourceRecord(0, STATIC_VISUAL_TYPE, 123, 0, 0, 0xF8, 0)
+        group = SimpleNamespace(relocations=SimpleNamespace(pointers={0xE8: 500}))
+        reader = SimpleNamespace(load_group=lambda _: group)
+        visual = object()
+        cache = {}
+        with patch("dahdev.dah1.world._decode_static_visual", return_value=visual) as decode:
+            self.assertIs(_default_static_visual(reader, resource, cache), visual)
+            decode.assert_called_once_with(reader, resource, cache)
 
 
 class EditorCollectionTests(unittest.TestCase):
@@ -104,7 +127,8 @@ class InstanceListTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("DAH_AREA42_SOURCE"), "retail fixture not configured")
 class CompleteWorldFixtureTests(unittest.TestCase):
     def test_every_counted_list_and_named_missing_setpiece(self):
-        world = read_world_scene(os.environ["DAH_AREA42_SOURCE"], include_visuals=False)
+        world = read_world_scene(os.environ["DAH_AREA42_SOURCE"])
+        self.assertTrue(all(not actor.lods for actor in world.archetypes.values()))
         self.assertEqual(len(world.buckets), 41)
         self.assertEqual(len(world.placements), 2674)
         self.assertEqual(len({p.offset for p in world.placements}), 2674)
@@ -116,6 +140,10 @@ class CompleteWorldFixtureTests(unittest.TestCase):
                                "b_sml_hanger": 3, "b_sml_majestic_hq_01": 1}.items():
             self.assertEqual(names[name], expected, name)
         self.assertTrue(any(p.packed_rotation_xy for p in world.placements))
+
+    def test_explicit_legacy_preview_rejects_segmented_retail_actor(self):
+        with self.assertRaisesRegex(ValueError, "actor_visuals.read_actor_visuals"):
+            read_world_scene(os.environ["DAH_AREA42_SOURCE"], include_visuals=True)
 
 
 if __name__ == "__main__":

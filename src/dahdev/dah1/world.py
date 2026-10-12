@@ -70,6 +70,8 @@ class StaticVisual:
     mesh: StaticMesh
     materials: tuple[NativeMaterial, ...]
     source_visual_type: int
+    # Historical interchange compatibility only. A segmented component key is
+    # a bone attachment index, never evidence for this legacy field.
     destruction_state: int | None
 
 
@@ -422,71 +424,24 @@ def _decode_static_visual(
 def _default_static_visual(
     reader: BlockReader, resource: ResourceRecord, mesh_cache: dict[int, StaticMesh]
 ) -> StaticVisual | None:
+    """Legacy static-only preview; never flatten a segmented attachment graph."""
     if resource.type_hash == STATIC_VISUAL_TYPE:
         group = reader.load_group(resource.load_group)
         if resource.offset + 0xE8 not in group.relocations.pointers:
             return None
         return _decode_static_visual(reader, resource, mesh_cache)
-    if resource.type_hash != SEGMENTED_VISUAL_TYPE or resource.size < 0xCC:
-        return None
-    group = reader.load_group(resource.load_group)
-    count = struct.unpack_from("<I", group.data, resource.offset + 0xC8)[0]
-    table = group.relocations.pointers.get(resource.offset + 0xC4)
-    if not count or table is None:
-        return None
-    state = struct.unpack_from("<I", group.data, table)[0]
-    target = group.relocations.pointers.get(table + 4)
-    child = (
-        reader.resource_by_location(resource.load_group, target)
-        if target is not None
-        else None
-    )
-    if child is None or child.type_hash != STATIC_VISUAL_TYPE:
-        raise ValueError("segmented visual default state is not a static visual")
-    material_override = None
-    if child.offset + 0xE8 not in group.relocations.pointers:
-        shared = group.relocations.pointers.get(resource.offset + 0xC0)
-        material_table = (
-            group.relocations.pointers.get(shared + 0x30)
-            if shared is not None
-            else None
+    if resource.type_hash == SEGMENTED_VISUAL_TYPE:
+        raise ValueError(
+            "segmented visuals contain bone-attached components, not a default "
+            "destruction state; use read_world_scene(..., include_visuals=False) "
+            "and actor_visuals.read_actor_visuals(world) to preserve every component"
         )
-        material_count = (
-            struct.unpack_from("<I", group.data, shared + 0x34)[0]
-            if shared is not None
-            else 0
-        )
-        if material_table is None or material_count == 0:
-            return None
-        materials: list[NativeMaterial] = []
-        for material_index in range(material_count):
-            material_target = group.relocations.pointers.get(
-                material_table + material_index * 4
-            )
-            material_resource = (
-                reader.resource_by_location(resource.load_group, material_target)
-                if material_target is not None
-                else None
-            )
-            if material_resource is None or material_resource.type_hash != MATERIAL_TYPE:
-                raise ValueError(
-                    "segmented visual shared material slot does not resolve to a material"
-                )
-            materials.append(decode_material(reader, material_resource))
-        material_override = tuple(materials)
-    return _decode_static_visual(
-        reader,
-        child,
-        mesh_cache,
-        source_visual_type=resource.type_hash,
-        destruction_state=state,
-        material_override=material_override,
-    )
+    return None
 
 
 def _decode_actor(
     reader: BlockReader, resource: ResourceRecord, mesh_cache: dict[int, StaticMesh],
-    *, include_visuals: bool = True,
+    *, include_visuals: bool = False,
 ) -> ActorArchetype:
     group = reader.load_group(resource.load_group)
     raw = group.data[resource.offset : resource.offset + resource.size]
@@ -543,7 +498,14 @@ def _decode_actor(
     )
 
 
-def read_world_scene(source_dir: str | Path | BlockReader, *, include_visuals: bool = True) -> WorldScene:
+def read_world_scene(source_dir: str | Path | BlockReader, *, include_visuals: bool = False) -> WorldScene:
+    """Read every native placement and archetype without selecting visual parts.
+
+    Use actor_visuals.read_actor_visuals(world) and humans.read_humans(world)
+    for complete rigid-component and skin reconstruction. The optional legacy
+    include_visuals=True path supports simple static previews only and raises
+    when a segmented visual would otherwise lose bone attachments.
+    """
     reader = source_dir if isinstance(source_dir, BlockReader) else BlockReader(source_dir)
     database = reader.resource_by_identity(INSTANCE_DATABASE_TYPE, WORLD_DATABASE_NAME)
     if database is None:

@@ -6,8 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from dahdev.dah1.container import BlockReader, ResourceRecord
-from dahdev.dah1.world import read_world_scene
+from dahdev.dah1.container import ResourceRecord
 from dahdev.dah1.spawns import (
     ACTOR_ARCHETYPE_TYPE, RANDOM_CLASS, LuaPrototype, _hash_entries,
     decode_constructor_tables, decode_population_definition, literal_calls,
@@ -105,8 +104,7 @@ class PopulationDecoderTests(unittest.TestCase):
 class Area42SpawnFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        reader = BlockReader(Path(os.environ["DAH_AREA42_SOURCE"]))
-        cls.scene = read_spawn_scene(reader, read_world_scene(reader, include_visuals=False))
+        cls.scene = read_spawn_scene(Path(os.environ["DAH_AREA42_SOURCE"]))
 
     def test_retail_counts_and_dependency_resolution(self):
         counts = self.scene.report["counts"]

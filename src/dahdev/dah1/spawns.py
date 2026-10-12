@@ -340,7 +340,9 @@ class SpawnScene:
 
 def read_spawn_scene(source: str | Path | BlockReader, world: WorldScene | None = None) -> SpawnScene:
     reader = source if isinstance(source, BlockReader) else BlockReader(source)
-    world = world or read_world_scene(reader)
+    # Spawn evidence requires the complete placement database, not the legacy
+    # static-only preview path. Visual readers/exporter handle marker filtering.
+    world = world or read_world_scene(reader, include_visuals=False)
     names: dict[int, set[str]] = defaultdict(set)
     script_calls = []
     definitions = []
