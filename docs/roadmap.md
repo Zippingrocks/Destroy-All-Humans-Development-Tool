@@ -31,17 +31,18 @@
   segment flags before calling the textured view accurate.
 - [ ] Expand the proven inspection view across every placement and both LODs.
 
-## 3. CryptoEditor read-only shell
+## 3. CryptoEditor read-only shell — current
 
-- Establish CryptoEditor as a maintained TrenchBroom GPLv3 fork in its own
+- [x] Establish CryptoEditor as a maintained TrenchBroom GPLv3 fork in its own
   repository, with upstream attribution and a documented update strategy.
-- Define a versioned interchange/API boundary between CryptoEditor and `dahdev`.
-- Load Area 42's native LOD0/LOD1 reference meshes and material assignments
+- [x] Define a versioned, read-only `.dahscene` boundary between CryptoEditor
+  and `dahdev`, with payload hashes, provenance, and explicit unknown fields.
+- [ ] Load Area 42's native LOD0/LOD1 reference meshes and material assignments
   without converting them into brushes or a heightfield.
-- Add explicit DAH terrain, reference mesh, object, and unknown-data node types.
-- Keep brush construction available for new geometry without implying that a
+- [ ] Add explicit DAH terrain, reference mesh, object, and unknown-data node types.
+- [ ] Keep brush construction available for new geometry without implying that a
   brush is a lossless representation of retail terrain.
-- Implement terrain navigation and a first read-only heightfield overlay.
+- [ ] Implement terrain navigation and a first read-only heightfield overlay.
 
 This milestone may progress alongside native writer research, but it cannot
 write game packages.

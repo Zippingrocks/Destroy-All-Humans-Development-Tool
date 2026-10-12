@@ -8,6 +8,7 @@ from typing import Sequence
 from .dah1.container import BlockReader
 from .dah1.materials import export_textured_section, write_material_outputs
 from .dah1.terrain import read_terrain_scene, write_validation_outputs
+from .editor_scene import export_area42_editor_scene
 from .profiles import PROFILES, profiles_as_dicts
 from .source import inspect_source
 from .verify import verification_report
@@ -66,6 +67,23 @@ def _build_parser() -> argparse.ArgumentParser:
     section.add_argument("--lod", type=int, choices=(0, 1), default=0, help="LOD child to export.")
     section.add_argument("--out", required=True, help="Generated output directory.")
     section.add_argument("--json", action="store_true", help="Emit the manifest as JSON.")
+
+    editor_scene = subparsers.add_parser(
+        "editor-scene-export",
+        help="Export verified Area 42 native terrain as a read-only CryptoEditor scene.",
+    )
+    editor_scene.add_argument("--source", required=True, help="Retail Area 42 block directory.")
+    editor_scene.add_argument(
+        "--reference",
+        required=True,
+        help="Verified reference NPZ or its containing directory.",
+    )
+    editor_scene.add_argument(
+        "--out",
+        required=True,
+        help="New or empty output directory ending in .dahscene.",
+    )
+    editor_scene.add_argument("--json", action="store_true", help="Emit the export report as JSON.")
 
     return parser
 
@@ -205,6 +223,23 @@ def _terrain_section_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _editor_scene_export(args: argparse.Namespace) -> int:
+    report = export_area42_editor_scene(args.source, args.reference, args.out)
+    if args.json:
+        _print_json(report)
+    else:
+        counts = report["counts"]
+        print(f"Scene:                {report['scene']}")
+        print(f"Terrain placements:   {counts['placements']}")
+        print(f"Geometry/LOD records: {counts['geometries']}/{counts['lods']}")
+        print(f"Materials/textures:   {counts['materials']}/{counts['textures']}")
+        print("Reference arrays:     byte-for-byte match")
+        print("Source unchanged:     yes")
+        print(f"Manifest SHA-256:     {report['manifest_sha256']}")
+        print(f"Buffer SHA-256:       {report['buffer_sha256']}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -219,6 +254,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _terrain_validate(args)
         if args.command == "terrain-section-export":
             return _terrain_section_export(args)
+        if args.command == "editor-scene-export":
+            return _editor_scene_export(args)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         parser.exit(2, f"error: {error}\n")
     parser.error(f"Unknown command: {args.command}")

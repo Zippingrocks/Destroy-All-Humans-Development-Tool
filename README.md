@@ -45,6 +45,9 @@ are established.
   91 unique materials and 67 bound BC1/BC3 textures.
 - A read-only textured OBJ/MTL inspection export for individual terrain
   placements, with unresolved UV/render-state claims labeled in its manifest.
+- A versioned, deterministic `.dahscene` interchange export containing all 92
+  native terrain placements, both LODs, material bindings, decoded texture
+  previews, preserved vertex/index bytes, and per-payload provenance hashes.
 - Explicit support matrix for prototype, DAH1 retail, and DAH2 retail.
 - Architecture and reconstruction acceptance gates.
 - A milestone order that requires unchanged-map preservation before mutation.
@@ -70,6 +73,10 @@ python -m dahdev terrain-section-export `
   --source "D:\path\to\blocks\sites\area42" `
   --placement 45 --lod 0 `
   --out ".\out\area42-tile045-lod0"
+python -m dahdev editor-scene-export `
+  --source "D:\path\to\blocks\sites\area42" `
+  --reference "D:\path\to\lod_transform_verified_2026-10-11" `
+  --out ".\out\area42.dahscene"
 python -m unittest discover -s tests -v
 ```
 
@@ -81,6 +88,7 @@ python -m dahdev inspect "D:\path\to\blocks\sites\area42"
 ```
 
 See [the architecture](docs/architecture.md), [the roadmap](docs/roadmap.md),
+[the editor-scene v1 contract](docs/editor-scene-v1.md),
 [the CryptoEditor plan](docs/cryptoeditor.md),
 [the WorldEdit feature evaluation](docs/worldedit-evaluation.md),
 [the Area 42 golden-map notes](docs/area42-golden-map.md), and the
