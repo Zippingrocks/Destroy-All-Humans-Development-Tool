@@ -1,14 +1,14 @@
 # CryptoEditor plan
 
 **CryptoEditor** is the standalone world and level editor in the Pandemic
-Development Tool family. It has its own product identity while remaining a
+Development Suite. It has its own product identity while remaining a
 frontend for the suite's native readers, compilers, and game/build adapters.
 
 ## Product boundary
 
 | Component | Responsibility |
 | --- | --- |
-| Pandemic Development Tool | Umbrella project and game/build research suite |
+| Pandemic Development Suite | Umbrella project and game/build research suite |
 | `dahdev` | DAH-native readers, provenance, validation, writers, and packaging |
 | CryptoEditor | Interactive map and world editor |
 | TrenchBroom | Primary open-source editor foundation |
@@ -52,8 +52,14 @@ pretending to be the retail mesh.
 
 ## First vertical slice
 
-1. Create the maintained CryptoEditor fork and establish a repeatable Windows
-   build from a pinned TrenchBroom revision.
+The local fork is established on TrenchBroom revision
+`30dd5b6189487f666cea6f1b6502dcabd13809a5`. Its `main` branch retains
+`upstream` as the TrenchBroom remote, and `CRYPTOEDITOR.md` records the build
+and architectural boundary. The Windows release build produces
+`CryptoEditor.exe`; all 132 TrenchBroom model/editor regression tests pass.
+Publishing the standalone remote is still pending.
+
+1. Keep the maintained CryptoEditor fork building and tested on Windows.
 2. Define the first versioned scene manifest/API between `dahdev` and CryptoEditor.
 3. Open Area 42 read-only with all 92 placements and both LODs.
 4. Render original material assignments and expose provenance in an inspector.
@@ -82,7 +88,7 @@ recomp file is modified.
 
 ## Repository plan
 
-- Keep this repository as the DAH-native core and Pandemic Development Tool
+- Keep this repository as the DAH-native core and Pandemic Development Suite
   integration point.
 - Host CryptoEditor in its own repository so the TrenchBroom-derived GPLv3 code and
   upstream history remain clear.

@@ -9,7 +9,7 @@ against.
 The foundation is **DAH-native**. Retail and recomp evidence stays read-only.
 The tool imports DAH data into a lossless scene model, records provenance, and
 eventually writes verified DAH packages. **CryptoEditor** is the standalone world
-editor being built for the Pandemic Development Tool. It uses TrenchBroom as
+editor being built for the Pandemic Development Suite. It uses TrenchBroom as
 its primary interface foundation while keeping Battlefront `.wld`/`.ter` and
 other editor formats out of the native DAH save path.
 

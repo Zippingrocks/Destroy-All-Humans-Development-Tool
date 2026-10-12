@@ -96,7 +96,7 @@ completed map import and cannot be used as native save input.
 
 ## CryptoEditor integration
 
-CryptoEditor is a standalone editor in the Pandemic Development Tool family. A
+CryptoEditor is a standalone editor in the Pandemic Development Suite. A
 maintained TrenchBroom fork supplies the brush-first editing foundation:
 orthographic and perspective views, selection, texture alignment, entity tools,
 commands, and undo/redo. CryptoEditor adds native terrain, reference-mesh, object,
