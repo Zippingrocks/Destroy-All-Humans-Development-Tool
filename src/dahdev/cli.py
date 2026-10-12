@@ -13,7 +13,7 @@ from .dah1.scatter import verify_scatter_executable_evidence
 from .dah1.spawns import verify_spawn_executable_evidence
 from .dah1.material_evidence import verify_material_executable_evidence
 from .dah1.mission_visuals import verify_landing_executable_evidence
-from .editor_scene import export_area42_editor_scene
+from .editor_scene import export_area42_editor_scene, validate_editor_scene_directory
 from .profiles import PROFILES, profiles_as_dicts
 from .source import inspect_source
 from .verify import verification_report
@@ -89,6 +89,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="New or empty output directory ending in .dahscene.",
     )
     editor_scene.add_argument("--json", action="store_true", help="Emit the export report as JSON.")
+
+    scene_check = subparsers.add_parser(
+        "editor-scene-validate",
+        help="Revalidate a generated scene's native coverage, references and buffers without exporting.",
+    )
+    scene_check.add_argument("--scene", required=True, help="Existing .dahscene directory.")
+    scene_check.add_argument("--json", action="store_true", help="Emit the validation report as JSON.")
 
     executable = subparsers.add_parser(
         "executable-evidence",
@@ -264,6 +271,21 @@ def _editor_scene_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _editor_scene_validate(args: argparse.Namespace) -> int:
+    report = validate_editor_scene_directory(args.scene)
+    if args.json:
+        _print_json(report)
+    else:
+        print(f"Scene:                {Path(args.scene).resolve()}")
+        print(f"Schema:               {report['schema_version']}")
+        print(f"Profile/map:          {report['profile_id']}/{report['map_name']}")
+        print(f"World placements:     {report['counts']['world_placements']}")
+        print(f"Manifest SHA-256:     {report['manifest_sha256']}")
+        print(f"Buffer SHA-256:       {report['buffer_sha256']}")
+        print("Scene checks:         passed (not a runtime or native-save test)")
+    return 0
+
+
 def _executable_evidence(args: argparse.Namespace) -> int:
     report = verify_executable_evidence(args.xbe)
     report["scatter"] = verify_scatter_executable_evidence(args.xbe)
@@ -309,6 +331,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _terrain_section_export(args)
         if args.command == "editor-scene-export":
             return _editor_scene_export(args)
+        if args.command == "editor-scene-validate":
+            return _editor_scene_validate(args)
         if args.command == "executable-evidence":
             return _executable_evidence(args)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:

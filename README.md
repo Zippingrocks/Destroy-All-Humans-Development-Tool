@@ -107,6 +107,7 @@ python -m dahdev editor-scene-export `
   --source "D:\path\to\blocks\sites\area42" `
   --reference "D:\path\to\lod_transform_verified_2026-10-11" `
   --out ".\out\area42.dahscene"
+python -m dahdev editor-scene-validate --scene ".\out\area42.dahscene"
 python -m unittest discover -s tests -v
 ```
 
