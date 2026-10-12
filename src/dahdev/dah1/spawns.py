@@ -25,6 +25,12 @@ _RUNTIME_EVIDENCE = {
     "world_region_lookup": (0x110570, "51e87aa5fcff8b1068cb7bce5968b34a89d08bc8ff521085c074228d4c2408518d542404528bc8e844e108008b04243d0fa00fa074078b400459c2040033c059c20400"),
     "landing_region_center": (0x6ADE4, "d946408b46488b0d68672800d9542420d94644"),
     "random_type_cumulative_choice": (0x119400, "51568bf157b9588a2700e8b1aefbffd95c24088b7e708b0733c985c07e2b8d570853d944240cd81adfe0f6c4057b128b46708b184183c2083bcb7ce65b5f5e59c38b4ccf04894e745b5f5e59c3"),
+    # Transforms a world point by the region matrix and rejects any local
+    # component outside [-1,+1].  All comparisons are strict, so the faces
+    # themselves are members of the region.
+    "region_unit_cube_membership": (0x119470, "8b54240483ec0c518d4c2404e83fd4fbffd90424d81de8622200dfe0f6c401755fd90424d81d285c2200dfe0f6c4417a4fd9442404d81de8622200dfe0f6c401753ed9442404d81d285c2200dfe0f6c4417a2dd9442408d81de8622200dfe0f6c401751cd9442408d81d285c2200dfe0f6c4417a0bb80100000083c40cc2040033c083c40cc20400"),
+    "region_local_min_minus_one": (0x2262E8, "000080bf"),
+    "region_local_max_plus_one": (0x225C28, "0000803f"),
 }
 
 
@@ -413,13 +419,23 @@ def read_spawn_scene(source: str | Path | BlockReader, world: WorldScene | None 
             raise ValueError("world region target has an unexpected type or size")
         raw = _span(group.data, target, 0x50, group.resource_limit, "region")
         matrix = np.frombuffer(raw[:64], dtype="<f4").reshape((4, 4)).copy()
+        region_to_world = np.linalg.inv(matrix.astype(np.float64))
         position = list(struct.unpack_from("<3f", raw, 0x40))
-        if not np.isfinite(matrix).all() or not all(math.isfinite(v) for v in position):
+        if (not np.isfinite(matrix).all() or not np.isfinite(region_to_world).all()
+                or not all(math.isfinite(v) for v in position)):
             raise ValueError("region has non-finite transform data")
         regions.append({
             "id": f"region:{key:08X}", "name_hash": _hex(key), "name_candidates": labels(key),
             "resource": _resource(reader, record), "table_pointer_field": field,
             "position": position, "world_to_region_matrix": matrix.tolist(),
+            "region_to_world_matrix": region_to_world.tolist(),
+            "local_bounds": {"minimum": [-1.0, -1.0, -1.0],
+                             "maximum": [1.0, 1.0, 1.0], "inclusive": True},
+            "membership_semantics": (
+                "retail transforms the world point by world_to_region_matrix and "
+                "accepts it when every local component is inclusively within [-1,+1]"
+            ),
+            "runtime_evidence": "default.xbe VA 0x00119470; bounds at 0x002262E8/0x00225C28",
             "native_layer_hash": _hex(struct.unpack_from("<I", raw, 0x4C)[0]),
             "raw_record_hex": raw.hex(), "confidence": "verified-retail-region-table",
         })

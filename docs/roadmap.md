@@ -82,13 +82,17 @@ write game packages.
 
 ## 4. Unchanged native save
 
-- Serialize to a new output directory without editing the scene.
+- [x] Establish a safe byte-preserving passthrough baseline in a new output directory;
+  Area 42 verifies four identical source files, 7,804 identical resource records,
+  710 decoded-identical load groups, and 10 opaque groups covered by enclosing-file identity.
+- [ ] Serialize the decoded native model to a new output directory without editing the scene.
 - Require byte-identical output where the container permits it.
 - For unavoidable layout changes, require a complete explained diff and an
   identical decoded resource graph after re-read.
 - Preserve unknown fields and records rather than regenerating guessed values.
 
 No mutating editor command is allowed to write packages before this milestone.
+The completed passthrough check is deliberately not treated as a semantic writer.
 
 ## 5. First native edit
 

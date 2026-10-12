@@ -43,3 +43,38 @@ class SceneValidationCommandTests(unittest.TestCase):
                 main(["editor-scene-validate", "--scene", directory])
         self.assertEqual(caught.exception.code, 2)
         self.assertIn("editor scene manifest not found", errors.getvalue())
+
+
+class OfflinePreservationCommandTests(unittest.TestCase):
+    def test_resource_inventory_json(self):
+        report = {
+            "resource_count": 3,
+            "resource_type_count": 1,
+            "families": [],
+            "important_limit": "unknown",
+        }
+        output = io.StringIO()
+        with patch("dahdev.cli.resource_coverage_report", return_value=report) as inventory:
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["resource-inventory", "--source", "area42", "--json"]), 0)
+        inventory.assert_called_once_with("area42")
+        self.assertEqual(json.loads(output.getvalue()), report)
+
+    def test_unchanged_copy_is_explicitly_not_a_writer(self):
+        report = {
+            "output": "copy",
+            "file_sha256": {"a.dir": "a"},
+            "resource_count": 3,
+            "decoded_load_group_count": 1,
+            "opaque_load_group_count": 0,
+            "load_groups": [{"index": 0}],
+        }
+        output = io.StringIO()
+        with patch("dahdev.cli.unchanged_copy_verify", return_value=report) as copy:
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(
+                    main(["unchanged-copy-verify", "--source", "area42", "--out", "copy"]),
+                    0,
+                )
+        copy.assert_called_once_with("area42", "copy")
+        self.assertIn("passthrough baseline only", output.getvalue())

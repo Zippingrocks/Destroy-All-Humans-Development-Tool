@@ -16,7 +16,7 @@ and provenance survive the interchange.
 | Characters and creatures | 295 human placements plus robots, powersuits, animals, vehicles, and population definitions | Authored reference poses; animation and held attachments remain unresolved |
 | Landing and spawn data | Three landing visuals, seven spawn definitions, and editor-only markers derived from native data | Visuals and annotations remain distinguishable |
 | Mission content | 146 objective definitions, 264 authored pickups, nine mission registrations, and 997 objective-script calls | Read-only objective hierarchy; activation is never inferred |
-| Spatial organization | 92 native region records with centers and world-to-region transforms | Searchable and camera-focusable; volume overlays stay disabled until the executable boundary convention is proven |
+| Spatial organization | 92 native region records with centers, world-to-region transforms, and executable-proven inclusive local bounds `[-1,+1]` | Searchable and camera-focusable; accurate translucent volume overlay is available and hidden by default |
 | Runtime organization | 41 mission/load layers, 135 entity tags, stable native entity IDs, and placement/tag cross-references | Searchable native hierarchy; no simulated active mission state |
 | Environment | First native sky visual, authored static/dynamic sun constants, original texture mip chains and native sampler state | Verified initial preview contract only |
 
@@ -25,7 +25,7 @@ and provenance survive the interchange.
 - **Rendered and evidenced:** native geometry, fixed transforms, first sky, initial authored
   lighting constants, material/texture dependencies, static scatter, landing visuals, and
   reference-pose actor visuals.
-- **Decoded and inspectable:** regions, mission/load layers, entity tags, spawn definitions,
+- **Decoded and inspectable:** region volumes, mission/load layers, entity tags, spawn definitions,
   script registrations, objectives, population definitions, raw native identities, load groups,
   source offsets, hashes, and unknown records.
 - **Preserved but not yet simulated:** mission activation, actor animation and attachments,
@@ -34,6 +34,12 @@ and provenance survive the interchange.
 - **Not yet an editable native system:** collision, navigation and traffic networks,
   destruction graphs/states, runtime streaming, audio emitters/music regions, camera/cinematic
   execution, and native package writes.
+- **Fully inventoried:** every one of the 7,804 directory resources is assigned to one of
+  42 type families. Unnamed families remain `preserved-unknown`; the inventory does not
+  guess that they are collision, navigation, destruction, audio, or cinematic data.
+- **Unchanged baseline proven:** a safe passthrough command copies all four block files to
+  a new directory byte-for-byte, re-parses the identical 7,804-record directory, and compares
+  every currently decodable load group. This is not yet semantic reserialization or a writer.
 
 ## Editor rules
 
@@ -50,12 +56,11 @@ and provenance survive the interchange.
 
 ## Next research priorities
 
-1. Verify the region membership boundary convention in the retail executable, then add an
-   optional region-volume overlay.
-2. Decode collision ownership and shapes and cross-link them to native placements.
-3. Decode navigation, pedestrian, traffic, patrol, and camera path networks.
-4. Decode destruction stages, damage volumes, fixture state changes, debris, and physics links.
-5. Complete retail render-state parity: special shader paths, animated UVs, fog, reflections,
+1. Decode collision ownership and shapes and cross-link them to native placements.
+2. Decode navigation, pedestrian, traffic, patrol, and camera path networks.
+3. Decode destruction stages, damage volumes, fixture state changes, debris, and physics links.
+4. Complete retail render-state parity: special shader paths, animated UVs, fog, reflections,
    local lights, effects, shadows, and same-camera comparisons.
-6. Model mission-layer activation without flattening mutually exclusive states into one scene.
-7. Prove lossless unchanged output before introducing any DAH package writer.
+5. Model mission-layer activation without flattening mutually exclusive states into one scene.
+6. Turn the byte-identical passthrough baseline into semantic reserialization without losing
+   unknown bytes, offsets, relocations, identities, or load-group ownership.

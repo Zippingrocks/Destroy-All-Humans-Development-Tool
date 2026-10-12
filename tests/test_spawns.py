@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 from dahdev.dah1.container import ResourceRecord
 from dahdev.dah1.spawns import (
     ACTOR_ARCHETYPE_TYPE, RANDOM_CLASS, LuaPrototype, _hash_entries,
@@ -126,6 +128,18 @@ class Area42SpawnFixtureTests(unittest.TestCase):
         self.assertEqual(sites["lz_majestic"]["resource"]["offset"], 0x793C80)
         self.assertEqual(sum(len(site["registration_calls"]) for site in sites.values()), 8)
 
+    def test_region_volumes_have_proven_unit_cube_bounds_and_inverse(self):
+        self.assertEqual(len(self.scene.regions), 92)
+        for region in self.scene.regions:
+            self.assertEqual(region["local_bounds"], {
+                "minimum": [-1.0, -1.0, -1.0],
+                "maximum": [1.0, 1.0, 1.0],
+                "inclusive": True,
+            })
+            world_to_region = np.asarray(region["world_to_region_matrix"])
+            region_to_world = np.asarray(region["region_to_world_matrix"])
+            np.testing.assert_allclose(world_to_region @ region_to_world, np.eye(4), atol=1e-5)
+
     def test_recipe_is_reconstructed_from_lua_constructor_instructions(self):
         tables = {d["name"]: d for d in self.scene.spawn_definitions if d["kind"] == "directed-spawn-table"}
         self.assertEqual(tables["area42spawn.defaults"]["levels"][0][0],
@@ -149,4 +163,8 @@ class SpawnRuntimeEvidenceTests(unittest.TestCase):
     def test_pinned_executable_bytes(self):
         result = verify_spawn_executable_evidence(os.environ["DAH_RETAIL_XBE"])
         self.assertEqual(result["status"], "verified")
-        self.assertEqual(len(result["checks"]), 4)
+        self.assertEqual(len(result["checks"]), 7)
+        names = {check["name"] for check in result["checks"]}
+        self.assertIn("region_unit_cube_membership", names)
+        self.assertIn("region_local_min_minus_one", names)
+        self.assertIn("region_local_max_plus_one", names)

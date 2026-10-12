@@ -13,6 +13,8 @@ from .dah1.scatter import verify_scatter_executable_evidence
 from .dah1.spawns import verify_spawn_executable_evidence
 from .dah1.material_evidence import verify_material_executable_evidence
 from .dah1.mission_visuals import verify_landing_executable_evidence
+from .dah1.resource_inventory import resource_coverage_report
+from .dah1.roundtrip import unchanged_copy_verify
 from .editor_scene import export_area42_editor_scene, validate_editor_scene_directory
 from .profiles import PROFILES, profiles_as_dicts
 from .source import inspect_source
@@ -103,6 +105,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     executable.add_argument("--xbe", required=True, help="Pinned DAH1 US Xbox retail default.xbe.")
     executable.add_argument("--json", action="store_true", help="Emit the evidence report as JSON.")
+
+    inventory = subparsers.add_parser(
+        "resource-inventory",
+        help="Account for every native resource family and report current reader coverage.",
+    )
+    inventory.add_argument("--source", required=True, help="Retail DAH1 map block directory.")
+    inventory.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+
+    unchanged = subparsers.add_parser(
+        "unchanged-copy-verify",
+        help="Copy an unchanged block set to a new directory and verify exact identity.",
+    )
+    unchanged.add_argument("--source", required=True, help="Retail DAH1 map block directory.")
+    unchanged.add_argument("--out", required=True, help="A new output directory outside the source.")
+    unchanged.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
 
     return parser
 
@@ -315,6 +332,40 @@ def _executable_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resource_inventory(args: argparse.Namespace) -> int:
+    report = resource_coverage_report(args.source)
+    if args.json:
+        _print_json(report)
+    else:
+        print(f"Resources:            {report['resource_count']}")
+        print(f"Resource families:    {report['resource_type_count']}")
+        for family in report["families"]:
+            label = family["name"] or "unknown"
+            print(
+                f"{family['type_hash']} {label:24} {family['coverage']:19} "
+                f"{family['resource_count']:5} records {family['total_bytes']:10} bytes"
+            )
+        print(f"Limit:                {report['important_limit']}")
+    return 0
+
+
+def _unchanged_copy_verify(args: argparse.Namespace) -> int:
+    report = unchanged_copy_verify(args.source, args.out)
+    if args.json:
+        _print_json(report)
+    else:
+        print(f"Output:               {report['output']}")
+        print(f"Files:                {len(report['file_sha256'])} byte-identical")
+        print(f"Resources:            {report['resource_count']} structurally identical")
+        print(
+            "Load groups:          "
+            f"{report['decoded_load_group_count']} decoded identical; "
+            f"{report['opaque_load_group_count']} opaque (enclosing file identical)"
+        )
+        print("Writer status:        passthrough baseline only; mutation remains disabled")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -335,6 +386,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _editor_scene_validate(args)
         if args.command == "executable-evidence":
             return _executable_evidence(args)
+        if args.command == "resource-inventory":
+            return _resource_inventory(args)
+        if args.command == "unchanged-copy-verify":
+            return _unchanged_copy_verify(args)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         parser.exit(2, f"error: {error}\n")
     parser.error(f"Unknown command: {args.command}")
