@@ -58,7 +58,8 @@ The local fork is established on TrenchBroom revision
 `upstream` as the TrenchBroom remote, and `CRYPTOEDITOR.md` records the build
 and architectural boundary. The Windows release build produces
 `CryptoEditor.exe`; all 132 TrenchBroom model/editor regression tests pass.
-Publishing the standalone remote is still pending.
+The standalone fork is published at
+<https://github.com/Zippingrocks/CryptoEditor>.
 
 1. Keep the maintained CryptoEditor fork building and tested on Windows.
 2. Define the first versioned scene manifest/API between `dahdev` and CryptoEditor.
@@ -91,7 +92,7 @@ recomp file is modified.
 
 - Keep this repository as the DAH-native core and Pandemic Development Suite
   integration point.
-- Host CryptoEditor in its own repository so the TrenchBroom-derived GPLv3 code and
+- Maintain CryptoEditor in its own repository so the TrenchBroom-derived GPLv3 code and
   upstream history remain clear.
 - Track the pinned CryptoEditor revision and interchange schema here; do not vendor
   the full editor tree into this Python project.
