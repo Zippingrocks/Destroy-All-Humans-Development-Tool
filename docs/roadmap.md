@@ -28,15 +28,19 @@
 - [x] Confirm stride 24 and the `+0x0C..+0x13` float2 UV interpretation in the
   pinned retail executable.
 - [x] Confirm the retail terrain declaration is `FLOAT3, FLOAT2, D3DCOLOR`,
-  preserve the packed diffuse color at `+0x14`, and apply its RGB modulation in
-  CryptoEditor without guessing its alpha/blend semantics.
+  preserve packed diffuse RGBA at `+0x14`, and trace native alpha and the basic
+  RGB-times-two shader operation in the executable.
 - [x] Recover per-axis wrap/clamp from material `+0x7C` flags and reproduce it in
   CryptoEditor.
 - [x] Expand the inspection view across every placement and both LODs.
 - [ ] Compare a representative section to the same in-game location and resolve
   any remaining orientation or render-state differences.
-- [ ] Identify the high byte of the segment flags and other preserved material
-  flag bits before claiming complete render-state semantics.
+- [x] Trace the signed high-byte segment layer/sort key and forced blended pass,
+  GREATER alpha test, LEQUAL depth and applicable reverse-subtract detail blend.
+- [x] Preserve authoring UV matrices but use the runtime initial identity transform
+  for compiled terrain UVs; do not apply that matrix twice.
+- [ ] Establish remaining special shader/material states and fog/shadow parity;
+  no claim of complete renderer reproduction follows from these base paths.
 
 ## 3. CryptoEditor read-only shell — current
 
@@ -46,14 +50,28 @@
   and `dahdev`, with payload hashes, provenance, and explicit unknown fields.
 - [x] Load Area 42's native LOD0/LOD1 reference meshes and material assignments
   without converting them into brushes or a heightfield.
-- [x] Parse the native world instance database: 41 buckets, 849 placements, and
-  the 18 retail building/world-structure placements present in Area 42.
+- [x] Parse both native world-instance lists: 41 buckets, 2,674 unique records,
+  150 archetypes and all four packed quaternion components. Supersedes the
+  incomplete 849-record v2/v3 reader.
 - [x] Follow the verified placement -> actor archetype -> visual LOD/direct visual
-  -> static mesh/material chain for all 18 building placements and all 23 placed
-  PropType set pieces, including the guard tower's segmented shared-material path,
-  and show all 41 at their retail transforms in the Area 42 reference scene.
+  -> static mesh/material chain for 132 rigid families / 2,164 placements,
+  including 79 building-group placements and 1,468 props. Decode the native
+  signed-16 segment count and every segmented bone attachment, not just its first part.
 - [x] Group native placements by DAH semantic class in the map-elements UI while
   retaining native bucket/record identity and unresolved records.
+- [x] Decode native foliage/rock scatter: all 654 batches, 15,121 instances,
+  five templates, full draw buffers, matrix/RGB records and base alpha/depth state.
+- [x] Decode 295 explicit humans at three native LODs with selected clothing
+  materials, raw skeletons, weights and batch palettes; display authored reference poses.
+- [x] Resolve three landing sites from script registration calls to native regions.
+- [x] Resolve `landing.SetZoneMarker` to its real 11-component mesh, 17 materials
+  and five textures; retain authored-center versus runtime-projected-Z distinction.
+- [x] Preview all 371 pedestrian skins, including cows/powersuits, alongside the
+  2,164 rigid placements; only 139 RandomType records lack fixed actor visuals.
+- [x] Decode 139 random-population positions, their three weighted definitions,
+  four directed-spawn recipe tables, and layer/tag relationships for all 2,674 records.
+- [ ] Reconstruct runtime human animation/attachments and scatter wind/fade.
+- [ ] Evaluate mission activation and collision-adjusted landing marker height.
 - [ ] Add explicit DAH terrain, reference mesh, object, and unknown-data node types.
 - [ ] Keep brush construction available for new geometry without implying that a
   brush is a lossless representation of retail terrain.
@@ -99,8 +117,8 @@ conversion.
 
 ## 7. Broader DAH1 map systems
 
-- Complete the remaining segmented/destructible building visual indirection and
-  expand static-object mesh decoding beyond the building class.
+- Reconstruct runtime segmented animation/visibility and destruction behavior;
+  the decoded component-table keys are bone attachments, not destruction states.
 - Collision, destruction, regions, paths, missions, and streaming.
 - Resource registration and cross-package dependency validation.
 

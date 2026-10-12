@@ -9,6 +9,10 @@ from .dah1.container import BlockReader
 from .dah1.executable_evidence import verify_executable_evidence
 from .dah1.materials import export_textured_section, write_material_outputs
 from .dah1.terrain import read_terrain_scene, write_validation_outputs
+from .dah1.scatter import verify_scatter_executable_evidence
+from .dah1.spawns import verify_spawn_executable_evidence
+from .dah1.material_evidence import verify_material_executable_evidence
+from .dah1.mission_visuals import verify_landing_executable_evidence
 from .editor_scene import export_area42_editor_scene
 from .profiles import PROFILES, profiles_as_dicts
 from .source import inspect_source
@@ -88,7 +92,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     executable = subparsers.add_parser(
         "executable-evidence",
-        help="Verify pinned DAH1 retail terrain layout and sampler evidence in default.xbe.",
+        help="Verify pinned DAH1 retail terrain, scatter, material and spawn evidence in default.xbe.",
     )
     executable.add_argument("--xbe", required=True, help="Pinned DAH1 US Xbox retail default.xbe.")
     executable.add_argument("--json", action="store_true", help="Emit the evidence report as JSON.")
@@ -250,6 +254,9 @@ def _editor_scene_export(args: argparse.Namespace) -> int:
             f"{counts['building_renderable_placements']} renderable"
         )
         print(f"Materials/textures:   {counts['materials']}/{counts['textures']}")
+        print(f"Humans:               {counts['human_placements']} authored reference poses")
+        print(f"Static scatter:       {counts['scatter_placements']} instances / {counts['scatter_batches']} batches")
+        print(f"Landing/spawn:        {counts['landing_sites']} sites / {counts['scene_markers']} markers / {counts['spawn_definitions']} definitions")
         print("Reference arrays:     byte-for-byte match")
         print("Source unchanged:     yes")
         print(f"Manifest SHA-256:     {report['manifest_sha256']}")
@@ -259,6 +266,10 @@ def _editor_scene_export(args: argparse.Namespace) -> int:
 
 def _executable_evidence(args: argparse.Namespace) -> int:
     report = verify_executable_evidence(args.xbe)
+    report["scatter"] = verify_scatter_executable_evidence(args.xbe)
+    report["spawns"] = verify_spawn_executable_evidence(args.xbe)
+    report["materials"] = verify_material_executable_evidence(args.xbe)
+    report["landing"] = verify_landing_executable_evidence(args.xbe)
     if args.json:
         _print_json(report)
     else:
@@ -266,6 +277,10 @@ def _executable_evidence(args: argparse.Namespace) -> int:
         sampler = report["terrain_material_addressing"]
         print(f"Build SHA-256:       {report['sha256']}")
         print(f"Evidence checks:     {len(report['checks'])} verified")
+        print(f"Scatter checks:      {len(report['scatter']['checks'])} verified")
+        print(f"Spawn checks:        {len(report['spawns']['checks'])} verified")
+        print(f"Material checks:     {len(report['materials']['checks'])} verified")
+        print(f"Landing checks:      {len(report['landing']['checks'])} verified")
         print(
             "Terrain vertices:    "
             f"stride {layout['stride']}, UV float2 at +0x{layout['uv_offset']:02X}"

@@ -42,7 +42,7 @@ class EditorSceneValidationTests(unittest.TestCase):
             "sha256": _sha256(b""),
         }
         manifest = {
-            "schema": {"name": SCHEMA_NAME, "version": SCHEMA_VERSION},
+            "schema": {"name": SCHEMA_NAME, "version": 3},
             "profile_id": "test-profile",
             "map_name": "test-map",
             "read_only": True,
@@ -60,6 +60,15 @@ class EditorSceneValidationTests(unittest.TestCase):
                 "building_renderable_placements": 1,
                 "prop_placements": 0,
                 "prop_renderable_placements": 0,
+                "human_placements": 0,
+                "human_renderable_placements": 0,
+                "human_geometries": 0,
+                "scatter_placements": 0,
+                "scatter_batches": 0,
+                "scatter_geometries": 0,
+                "scene_markers": 0,
+                "landing_sites": 0,
+                "spawn_definitions": 0,
             },
             "geometries": [
                 {
@@ -99,6 +108,11 @@ class EditorSceneValidationTests(unittest.TestCase):
                     "lods": [{"index": 0, "geometry": "geometry:00000001"}],
                 }
             ],
+            "scatter_placements": [],
+            "scatter_batches": [],
+            "scene_markers": [],
+            "spawn_definitions": [],
+            "human_archetypes": [],
         }
         (root / "scene.json").write_text(json.dumps(manifest), encoding="utf-8")
         return manifest
@@ -108,7 +122,7 @@ class EditorSceneValidationTests(unittest.TestCase):
             root = Path(directory)
             self._write_scene(root)
             result = validate_editor_scene_directory(root)
-            self.assertEqual(result["schema_version"], 2)
+            self.assertEqual(result["schema_version"], 3)
             self.assertEqual(result["counts"]["terrain_lods"], 2)
 
     def test_rejects_a_changed_buffer(self) -> None:
@@ -126,6 +140,28 @@ class EditorSceneValidationTests(unittest.TestCase):
             manifest["buffers"]["file"] = "../buffers.bin"
             (root / "scene.json").write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "escapes"):
+                validate_editor_scene_directory(root)
+
+    def test_rejects_nonfinite_marker_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._write_scene(root)
+            manifest["counts"]["scene_markers"] = 1
+            manifest["scene_markers"] = [{"id": "landing:test", "kind": "landing-site",
+                "label": "test", "status": "authored", "position_f32": [0, float("nan"), 0]}]
+            (root / "scene.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "finite"):
+                validate_editor_scene_directory(root)
+
+    def test_rejects_unaccounted_scatter_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._write_scene(root)
+            manifest["counts"]["scatter_batches"] = 1
+            manifest["scatter_batches"] = [{"id": "scatter:test", "instance_count": 1,
+                "instance_buffer": {"offset": 0, "length": 8, "sha256": _sha256(b"vertices")}}]
+            (root / "scene.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "scatter instance buffer"):
                 validate_editor_scene_directory(root)
 
 

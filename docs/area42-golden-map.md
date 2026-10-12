@@ -65,11 +65,32 @@ The reproducible `dahdev executable-evidence` probe additionally verifies:
   native values 1 for wrap and 3 for clamp.
 
 Across the 91 unique Area 42 terrain materials, 69 wrap both axes, one clamps U
-only, four clamp V only, and 17 clamp both axes. Other material flag bits remain
-preserved without assigned semantics.
+only, four clamp V only, and 17 clamp both axes. Unknown material flag bits remain
+preserved. Later executable-backed render evidence is summarized below.
 
 Four terrain materials have no relocated texture binding. They remain explicit
 in the report rather than receiving a guessed fallback texture.
+
+## Expanded read-only scene and render evidence
+
+Schema v4 traverses both native world-instance lists, recovering 2,674 records
+and 150 archetypes rather than the incomplete historical 849-record scene.
+All 79 building-group placements and 1,468 props have native visuals. In total,
+132 rigid visual families cover 2,164 placements, 15 skin archetypes cover 371
+pedestrians, and 139 RandomType positions retain choices without invented actors.
+The three script-registered landing sites use their genuine 11-part visual with
+17 materials and five textures, at authored centers pending runtime projection.
+
+`material_evidence.py` pins the signed terrain segment high-byte layer/sort
+path, native vertex alpha, the basic RGB-times-two pixel operation, GREATER alpha
+testing, LEQUAL depth and applicable reverse-subtract detail blending. It also
+verifies that initial terrain loading resets effective UV transforms to identity;
+retained authoring transforms are not applied again to compiled mesh UVs.
+
+These are specific verified paths, not full renderer parity. Runtime mission
+activation, landing collision height, animation, fog, special shaders and shadow
+behavior still require independent work and same-camera retail comparisons.
+Native data, source hashes and terrain reference arrays remain unchanged.
 
 ## Heightmap limits
 

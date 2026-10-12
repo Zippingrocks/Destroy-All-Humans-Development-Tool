@@ -101,6 +101,10 @@ class WorldPlacement:
     quaternion_xyzw: NDArray[np.float32]
     scale: np.float32
     matrix: NDArray[np.float32]
+    list_pointer_field: int = 0
+    list_offset: int = 0
+    list_index: int = 0
+    packed_rotation_xy: int = 0
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,7 @@ class InstanceBucket:
     type_hash: int
     pointer_table_offset: int
     placements: tuple[WorldPlacement, ...]
+    list_offsets: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -142,12 +147,60 @@ def decode_packed_yaw_quaternion(value: int) -> NDArray[np.float32]:
     return np.asarray((0.0, 0.0, snorm(z_raw), snorm(w_raw)), dtype=np.float32)
 
 
+def decode_packed_quaternion(xy: int, zw: int) -> NDArray[np.float32]:
+    """Decode all four signed-16 components; props may pitch and roll as well as yaw."""
+    return np.asarray(
+        [max(-1.0, value / 32767.0) for value in struct.unpack("<4h", struct.pack("<II", xy, zw))],
+        dtype=np.float32,
+    )
+
+
+def instance_list_records(data: bytes, relocations: dict[int, int], bucket_offset: int,
+                          limit: int) -> tuple[tuple[int, int, int, int], ...]:
+    """Traverse BOTH native counted lists at +0x0C/+0x10, never an inline shortcut.
+
+    Return (pointer field, list header, list index, placement offset). Native list
+    purposes remain separate from semantic/editor categories until runtime verified.
+    """
+    result = []
+    seen_lists: set[int] = set()
+    seen_records: set[int] = set()
+    for relative in (0x0C, 0x10):
+        field = bucket_offset + relative
+        if field + 4 > limit:
+            raise ValueError("instance bucket header is truncated")
+        table = relocations.get(field)
+        if table is None:
+            if data[field:field + 4] != bytes(4):
+                raise ValueError("instance list pointer is nonzero without relocation")
+            continue
+        if table in seen_lists or table < 0 or table + 4 > limit:
+            raise ValueError("instance list is duplicated or outside resource data")
+        seen_lists.add(table)
+        count = struct.unpack_from("<I", data, table)[0]
+        if table + 4 + count * 4 > limit:
+            raise ValueError("instance list pointer array is truncated")
+        for index in range(count):
+            target = relocations.get(table + 4 + index * 4)
+            if target is None or target < 0 or target + 0x40 > limit:
+                raise ValueError("instance placement record is missing or truncated")
+            if target in seen_records:
+                raise ValueError("instance placement is duplicated across native lists")
+            seen_records.add(target)
+            result.append((relative, table, index, target))
+    return tuple(result)
+
+
 def classify_editor_collection(native_class: str | None, asset_name: str | None) -> str:
     """Add a reversible editor grouping without replacing the native class."""
 
     if asset_name and (asset_name.startswith("b_") or asset_name == "e_guard_tower"):
         return "buildings"
-    if native_class == "ActorTypePedestrian" or (asset_name and asset_name.startswith("h_")):
+    if native_class == "RandomType":
+        return "population"
+    if asset_name and asset_name.startswith("a_"):
+        return "animals"
+    if asset_name and asset_name.startswith("h_"):
         return "humans"
     if native_class in {"ActorTypeCarDrive", "ActorTypeCarParked"} or (
         asset_name and asset_name.startswith("v_")
@@ -157,8 +210,6 @@ def classify_editor_collection(native_class: str | None, asset_name: str | None)
         return "props"
     if native_class and native_class.startswith("ActorType"):
         return "gameplay"
-    if native_class == "RandomType":
-        return "population"
     return "other"
 
 
@@ -179,7 +230,7 @@ def _semantic_actor_strings(raw: bytes) -> tuple[str | None, str | None]:
         (
             value
             for value in strings
-            if value.startswith(("b_", "e_", "h_", "m_", "p_", "r_", "v_"))
+            if value.startswith(("a_", "b_", "e_", "h_", "m_", "p_", "r_", "v_"))
         ),
         None,
     )
@@ -204,9 +255,11 @@ def decode_static_mesh(reader: BlockReader, resource: ResourceRecord) -> StaticM
     normal_buffer = relocations.get(base + 4, 0)
     index_buffer = relocations[base + 8]
     segment_buffer = relocations[base + 0x1C]
-    vertex_count, index_count, packed_layout, segment_count = struct.unpack_from(
-        "<4I", data, base + 0xC
-    )
+    vertex_count, index_count, packed_layout = struct.unpack_from("<3I", data, base + 0xC)
+    # Retail E6F46/E6F86/E7390 read this as signed16, not a uint32.
+    segment_count = struct.unpack_from("<h", data, base + 0x18)[0]
+    if segment_count < 0:
+        raise ValueError("static mesh has a negative segment count")
     stride = packed_layout & 0xFFFF
     layout_flags = packed_layout >> 16
     if stride != 28:
@@ -432,7 +485,8 @@ def _default_static_visual(
 
 
 def _decode_actor(
-    reader: BlockReader, resource: ResourceRecord, mesh_cache: dict[int, StaticMesh]
+    reader: BlockReader, resource: ResourceRecord, mesh_cache: dict[int, StaticMesh],
+    *, include_visuals: bool = True,
 ) -> ActorArchetype:
     group = reader.load_group(resource.load_group)
     raw = group.data[resource.offset : resource.offset + resource.size]
@@ -455,7 +509,7 @@ def _decode_actor(
     # Promote placed buildings and structural/set-dressing props. Dynamic actors
     # remain represented by their native archetypes until their animated layouts
     # are decoded independently.
-    decode_visuals = classify_editor_collection(native_class, asset_name) in {
+    decode_visuals = include_visuals and classify_editor_collection(native_class, asset_name) in {
         "buildings",
         "props",
     }
@@ -489,7 +543,7 @@ def _decode_actor(
     )
 
 
-def read_world_scene(source_dir: str | Path | BlockReader) -> WorldScene:
+def read_world_scene(source_dir: str | Path | BlockReader, *, include_visuals: bool = True) -> WorldScene:
     reader = source_dir if isinstance(source_dir, BlockReader) else BlockReader(source_dir)
     database = reader.resource_by_identity(INSTANCE_DATABASE_TYPE, WORLD_DATABASE_NAME)
     if database is None:
@@ -510,20 +564,9 @@ def read_world_scene(source_dir: str | Path | BlockReader) -> WorldScene:
         if bucket_offset is None:
             raise ValueError("instance database bucket pointer lacks a relocation")
         bucket_hash = struct.unpack_from("<I", data, bucket_offset)[0]
-        list_header = bucket_offset + 0x14
-        list_links = (
-            relocations.get(bucket_offset + 0x0C),
-            relocations.get(bucket_offset + 0x10),
-        )
-        pointer_table = next((target for target in list_links if target == list_header), None)
-        count = struct.unpack_from("<I", data, bucket_offset + 0x14)[0]
-        if count and pointer_table is None:
-            raise ValueError("instance bucket pointer table does not match the retail layout")
+        records = instance_list_records(data, relocations, bucket_offset, group.resource_limit)
         bucket_placements: list[WorldPlacement] = []
-        for index in range(count):
-            record_offset = relocations.get(bucket_offset + 0x18 + index * 4)
-            if record_offset is None or record_offset + 0x40 > group.resource_limit:
-                raise ValueError("instance placement record is missing or truncated")
+        for index, (list_field, list_offset, list_index, record_offset) in enumerate(records):
             actor_target = relocations.get(record_offset + 0x3C)
             actor_resource = (
                 reader.resource_by_location(database.load_group, actor_target)
@@ -536,14 +579,17 @@ def read_world_scene(source_dir: str | Path | BlockReader) -> WorldScene:
                     raise ValueError("instance placement archetype has an unexpected type")
                 actor = archetypes.get(actor_resource.name_hash)
                 if actor is None:
-                    actor = _decode_actor(reader, actor_resource, mesh_cache)
+                    actor = _decode_actor(reader, actor_resource, mesh_cache, include_visuals=include_visuals)
                     archetypes[actor_resource.name_hash] = actor
             position = np.asarray(
                 struct.unpack_from("<3f", data, record_offset + 0x10), dtype=np.float32
             )
             packed_rotation = struct.unpack_from("<I", data, record_offset + 0x20)[0]
-            quaternion = decode_packed_yaw_quaternion(packed_rotation)
+            packed_rotation_xy = struct.unpack_from("<I", data, record_offset + 0x1C)[0]
+            quaternion = decode_packed_quaternion(packed_rotation_xy, packed_rotation)
             scale = np.float32(struct.unpack_from("<f", data, record_offset + 0x24)[0])
+            if not np.isfinite(position).all() or not np.isfinite(scale):
+                raise ValueError("world placement has non-finite position or scale")
             placement = WorldPlacement(
                 bucket_index=bucket_index,
                 bucket_hash=bucket_hash,
@@ -556,6 +602,10 @@ def read_world_scene(source_dir: str | Path | BlockReader) -> WorldScene:
                 quaternion_xyzw=quaternion,
                 scale=scale,
                 matrix=instance_matrix(quaternion, position, scale),
+                list_pointer_field=list_field,
+                list_offset=list_offset,
+                list_index=list_index,
+                packed_rotation_xy=packed_rotation_xy,
             )
             bucket_placements.append(placement)
             placements.append(placement)
@@ -564,8 +614,9 @@ def read_world_scene(source_dir: str | Path | BlockReader) -> WorldScene:
                 index=bucket_index,
                 offset=bucket_offset,
                 type_hash=bucket_hash,
-                pointer_table_offset=list_header,
+                pointer_table_offset=records[0][1] if records else 0,
                 placements=tuple(bucket_placements),
+                list_offsets=tuple(dict.fromkeys(record[1] for record in records)),
             )
         )
     return WorldScene(

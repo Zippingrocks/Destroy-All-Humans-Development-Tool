@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +26,17 @@ from .dah1.world import (
     classify_editor_collection,
     read_world_scene,
 )
+from .dah1.humans import read_humans, validate_human_archetype_reports
+from .dah1.scatter import read_scatter_scene, scatter_report, material_render_state
+from .dah1.spawns import read_spawn_scene
+from .dah1.actor_visuals import read_actor_visuals
+from .dah1.mission_visuals import read_landing_visual_scene
+from .dah1.material_evidence import native_material_evidence, terrain_segment_render_state
+from .dah1.scene_validation import validate_complete_scene
 
 
 SCHEMA_NAME = "dah-editor-scene"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 AREA42_PROFILE = "dah1-retail-xbox-us"
 AREA42_MAP = "area42"
 AREA42_COUNTS = {
@@ -44,12 +52,108 @@ AREA42_COUNTS = {
     "prop_renderable_placements": 23,
     "prop_geometries": 11,
     "renderable_structure_placements": 41,
-    "geometries": 203,
     "lod0_vertices": 122956,
     "lod0_triangles": 103634,
     "lod1_vertices": 16240,
     "lod1_triangles": 8120,
 }
+AREA42_V4_COUNTS = {**AREA42_COUNTS, "world_placements": 2674,
+                   "building_placements": 79, "building_renderable_placements": 79,
+                   "prop_placements": 1468, "prop_renderable_placements": 1468,
+                   "renderable_structure_placements": 1547}
+for _key in ("building_geometries", "prop_geometries"):
+    del AREA42_V4_COUNTS[_key]
+
+
+def _parts_lod(lod: Any) -> dict[str, object]:
+    parts = [{"geometry": f"geometry:static:{p.visual.mesh.resource.name_hash:08x}",
+              "material_slots": [f"material:{m.resource.name_hash:08x}" for m in p.visual.materials],
+              "matrix_row_major_f32": p.matrix.reshape(-1).tolist(),
+              "visual": _resource(p.visual.resource), "bone_index": p.bone_index,
+              "table_offset": p.table_offset, "raw_table_record_hex": p.raw_table_record.hex()}
+             for p in lod.parts]
+    return {"index": lod.index, "geometry": parts[0]["geometry"],
+            "material_slots": parts[0]["material_slots"], "parts": parts,
+            "visual": _resource(lod.resource), "preview_status": lod.pose_status}
+
+
+def _skeleton_report(skeleton: Any) -> dict[str, object] | None:
+    if skeleton is None:
+        return None
+    return {"load_group": skeleton.load_group, "shared_offset": skeleton.shared_offset,
+            "raw_shared_header_hex": skeleton.raw_shared_header.hex(),
+            "bone_buffer_offset": skeleton.bone_buffer_offset,
+            "bones": [{"index": b.index, "offset": b.offset, "name_hash": f"0x{b.name_hash:08X}",
+                       "parent_index": b.parent_index, "raw_hex": b.raw_bytes.hex(),
+                       "local_position_f32": list(b.local_position),
+                       "local_quaternion_xyzw_f32": list(b.local_quaternion_xyzw),
+                       "local_scale_f32": b.local_scale} for b in skeleton.bones]}
+
+
+def _human_geometry_entry(mesh: Any, buffer: _BufferBuilder) -> dict[str, object]:
+    return {
+        "id": f"geometry:human:{mesh.resource.name_hash:08x}",
+        "kind": "human-reference-pose",
+        "resource": _resource(mesh.resource),
+        "preview_status": "native-reference-mesh; animation-not-applied",
+        "raw_descriptor_hex": mesh.raw_descriptor.hex(),
+        "counts": {"vertices": len(mesh.local_positions), "indices": len(mesh.indices),
+                   "triangles": len(mesh.triangles), "segments": len(mesh.segments)},
+        "native_offsets": {"vertex_buffer": mesh.vertex_buffer_offset,
+                           "index_buffer": mesh.index_buffer_offset,
+                           "segment_buffer": mesh.segment_buffer_offset},
+        "vertex_layout": {
+            "stride": 40,
+            "position": {"offset": 0, "format": "float32x3-little-endian", "status": "verified"},
+            "normal": {"offset": 12, "format": "float32x3-little-endian", "status": "verified"},
+            "weights": {"offset": 24, "format": "uint8x4", "status": "structurally-verified"},
+            "bone_indices": {"offset": 28, "format": "uint8x4-palette-slot-times-six", "status": "structurally-verified"},
+            "uv": {"offset": 32, "format": "float32x2-little-endian", "status": "verified"},
+        },
+        "buffers": {
+            "vertices": buffer.add(mesh.vertex_bytes.tobytes()),
+            "index_strip": buffer.add(mesh.indices.astype("<u2", copy=False).tobytes()),
+            "triangles": buffer.add(mesh.triangles.astype("<u4", copy=False).tobytes()),
+            "segments": buffer.add(b"".join(s.raw_bytes for s in mesh.segments)),
+        },
+        "segments": [{"index": s.index, "vertex_start": s.vertex_start,
+                      "vertex_count": s.vertex_count, "index_start": s.index_start,
+                      "index_count": s.index_count, "triangle_count": s.triangle_count,
+                      "material_slot": s.material_slot, "native_offset": s.offset,
+                      "bone_palette": [list(pair) for pair in s.palette]}
+                     for s in mesh.segments],
+    }
+
+
+def _scatter_geometry_id(template: Any) -> str:
+    return f"geometry:scatter:{template.load_group}:{template.vertex_buffer_offset:08x}"
+
+
+def _scatter_geometry_entry(template: Any, buffer: _BufferBuilder) -> dict[str, object]:
+    return {
+        "id": _scatter_geometry_id(template), "kind": "static-scatter",
+        "counts": {"vertices": len(template.local_positions), "indices": len(template.indices),
+                   "triangles": len(template.triangles), "segments": 1},
+        "native_offsets": {"load_group": template.load_group,
+                           "vertex_buffer": template.vertex_buffer_offset,
+                           "index_buffer": template.index_buffer_offset},
+        "vertex_layout": {
+            "stride": 24,
+            "position": {"offset": 0, "format": "float32x3-little-endian", "status": "verified"},
+            "uv": {"offset": 12, "format": "float32x2-little-endian", "status": "verified"},
+            "constant_selector": {"offset": 20, "format": "float32-little-endian", "status": "verified"},
+        },
+        "buffers": {
+            "vertices": buffer.add(template.vertex_bytes.tobytes()),
+            "index_strip": buffer.add(template.indices.astype("<u2", copy=False).tobytes()),
+            "triangles": buffer.add(template.triangles.astype("<u4", copy=False).tobytes()),
+            "segments": buffer.add(b""),
+            "native_draw_vertices": buffer.add(template.native_draw_vertex_bytes),
+            "native_draw_indices": buffer.add(template.native_draw_index_bytes),
+        },
+        "segment_origin": "one native material per scatter batch; no native segment table",
+        "segments": [{"index": 0, "triangle_count": len(template.triangles), "material_slot": 0}],
+    }
 
 
 def _sha256(data: bytes) -> str:
@@ -184,7 +288,7 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
     schema = manifest.get("schema")
     if not isinstance(schema, dict):
         raise ValueError("editor scene schema must be an object")
-    if schema.get("name") != SCHEMA_NAME or schema.get("version") != SCHEMA_VERSION:
+    if schema.get("name") != SCHEMA_NAME or schema.get("version") not in (2, 3, SCHEMA_VERSION):
         raise ValueError("unsupported editor scene schema")
     if manifest.get("read_only") is not True:
         raise ValueError("editor scene must be explicitly read-only")
@@ -229,8 +333,9 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
         views = geometry.get("buffers")
         if not isinstance(views, dict):
             raise ValueError(f"geometry {geometry_id} lacks buffer views")
-        for semantic in ("vertices", "index_strip", "triangles", "segments"):
-            view = views.get(semantic)
+        if not {"vertices", "index_strip", "triangles", "segments"}.issubset(views):
+            raise ValueError(f"geometry {geometry_id} lacks required buffer views")
+        for semantic, view in views.items():
             if not isinstance(view, dict):
                 raise ValueError(f"geometry {geometry_id} lacks {semantic} buffer view")
             offset = _require_int(view, "offset", f"geometry {geometry_id}.{semantic}")
@@ -294,6 +399,61 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
     ):
         raise ValueError("editor scene renderable prop placement count mismatch")
 
+    if schema.get("version") >= 3:
+        validate_human_archetype_reports(manifest.get("human_archetypes"), object_placements)
+        expansion_arrays = {key: manifest.get(key) for key in
+                            ("scatter_placements", "scatter_batches", "scene_markers", "spawn_definitions")}
+        for key, items in expansion_arrays.items():
+            if not isinstance(items, list) or len(items) != _require_int(counts, key, "counts"):
+                raise ValueError(f"editor scene {key} count mismatch")
+            ids = [item.get("id") if isinstance(item, dict) else None for item in items]
+            if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+                raise ValueError(f"editor scene {key} ids must be unique nonempty strings")
+        for placement in [*object_placements, *placements, *expansion_arrays["scatter_placements"]]:
+            matrix = placement.get("matrix_row_major_f32")
+            if not isinstance(matrix, list) or len(matrix) != 16 or any(
+                not isinstance(v, (float, int)) or isinstance(v, bool) or not math.isfinite(v) for v in matrix
+            ):
+                raise ValueError("editor scene transform must contain 16 finite numbers")
+            lods = placement.get("lods")
+            if not isinstance(lods, list) or any(lod.get("geometry") not in geometry_ids for lod in lods):
+                raise ValueError("editor scene expanded placement references an unknown geometry")
+        batches = {b["id"]: b for b in expansion_arrays["scatter_batches"]}
+        for batch in batches.values():
+            view = batch.get("instance_buffer", {})
+            offset = _require_int(view, "offset", "scatter instance buffer")
+            length = _require_int(view, "length", "scatter instance buffer")
+            if (length != _require_int(batch, "instance_count", "scatter batch") * 80
+                or offset + length > len(payload)
+                or _sha256(payload[offset:offset + length]) != view.get("sha256")):
+                raise ValueError("scatter instance buffer size or SHA-256 mismatch")
+        seen_instances = set()
+        for placement in expansion_arrays["scatter_placements"]:
+            native = placement.get("native", {})
+            batch = batches.get(native.get("batch"))
+            index = _require_int(native, "instance_index", "scatter placement")
+            pair = (native.get("batch"), index)
+            if batch is None or index >= batch["instance_count"] or pair in seen_instances:
+                raise ValueError("scatter placement has duplicate or invalid native instance")
+            seen_instances.add(pair)
+        if len(seen_instances) != sum(b["instance_count"] for b in batches.values()):
+            raise ValueError("scatter placements do not account for every native instance")
+        for marker in expansion_arrays["scene_markers"]:
+            position = marker.get("position_f32")
+            if (not isinstance(position, list) or len(position) != 3
+                or any(not isinstance(v, (float, int)) or isinstance(v, bool) or not math.isfinite(v) for v in position)):
+                raise ValueError("scene marker position must contain three finite numbers")
+            if any(not isinstance(marker.get(k), str) or not marker[k] for k in ("kind", "label", "status")):
+                raise ValueError("scene marker lacks its kind, label or status")
+        for collection, key in (("humans", "human"),):
+            members = [p for p in object_placements if p.get("editor_collection") == collection]
+            if len(members) != _require_int(counts, f"{key}_placements", "counts") or sum(bool(p["lods"]) for p in members) != _require_int(counts, f"{key}_renderable_placements", "counts"):
+                raise ValueError(f"editor scene {key} placement count mismatch")
+        if sum(g.get("kind") == "static-scatter" for g in geometries) != _require_int(counts, "scatter_geometries", "counts") or sum(g.get("kind") == "human-reference-pose" for g in geometries) != _require_int(counts, "human_geometries", "counts"):
+            raise ValueError("editor scene expanded geometry count mismatch")
+        if sum(m["kind"] == "landing-site" for m in expansion_arrays["scene_markers"]) != _require_int(counts, "landing_sites", "counts"):
+            raise ValueError("editor scene landing site count mismatch")
+
     textures = manifest.get("textures")
     if not isinstance(textures, list):
         raise ValueError("editor scene textures must be an array")
@@ -308,15 +468,27 @@ def validate_editor_scene_directory(path: str | Path) -> dict[str, object]:
             raise ValueError("editor scene texture preview SHA-256 mismatch")
 
     if manifest.get("profile_id") == AREA42_PROFILE and manifest.get("map_name") == AREA42_MAP:
-        for key, expected in AREA42_COUNTS.items():
+        for key, expected in (AREA42_V4_COUNTS if schema["version"] >= 4 else AREA42_COUNTS).items():
             if counts.get(key) != expected:
                 raise ValueError(
                     f"Area 42 editor scene count mismatch for {key}: "
                     f"expected {expected}, got {counts.get(key)}"
                 )
+        if schema.get("version") >= 3:
+            for key, expected in {"human_placements": 295, "human_renderable_placements": 295,
+                                  "scatter_batches": 654, "scatter_placements": 15121,
+                                  "scatter_geometries": 5, "landing_sites": 3}.items():
+                if counts.get(key) != expected:
+                    raise ValueError(f"Area 42 {key} count mismatch")
+        expected_geometries = 203 + counts.get("human_geometries", 0) + counts.get("scatter_geometries", 0)
+        if schema["version"] < 4 and counts["geometries"] != expected_geometries:
+            raise ValueError("Area 42 geometry count mismatch")
+
+    if schema["version"] >= 4:
+        validate_complete_scene(manifest, payload)
 
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema["version"],
         "profile_id": manifest.get("profile_id"),
         "map_name": manifest.get("map_name"),
         "counts": counts,
@@ -332,6 +504,9 @@ def _material_entry(material: NativeMaterial) -> dict[str, object]:
         "resource": _resource(material.resource),
         "raw_sha256": _sha256(material.raw_bytes),
         "render_flags": material.render_flags,
+        "render_state": material_render_state(material),
+        "native_material_evidence": native_material_evidence(material, kind="shared-resource"),
+        "raw_hex": material.raw_bytes.hex(),
         "sampler": {
             "address_u": material.address_u,
             "address_v": material.address_v,
@@ -385,7 +560,17 @@ def export_area42_editor_scene(
 
     source_hashes_before = BlockReader(source).source_hashes()
     scene = read_terrain_scene(source)
-    world = read_world_scene(scene.reader)
+    world = read_world_scene(scene.reader, include_visuals=False)
+    humans = read_humans(world)
+    actors = read_actor_visuals(world)
+    scatter = read_scatter_scene(scene)
+    spawns = read_spawn_scene(scene.reader, world)
+    landing = read_landing_visual_scene(scene.reader, spawns)
+    human_archetypes = {
+        p.actor.resource.name_hash: humans.archetypes[p.actor.resource.name_hash]
+        for p in humans.placements
+    }
+    skin_archetypes = humans.archetypes
     comparison = compare_reference_arrays(build_reference_arrays(scene), reference_file)
     if not comparison["all_arrays_byte_equal"]:
         raise ValueError("native terrain does not match the verified reference arrays")
@@ -457,7 +642,7 @@ def export_area42_editor_scene(
                         "triangle_count": segment.triangle_count,
                         "raw_flags": f"0x{segment.raw_flags:04X}",
                         "material_slot": segment.raw_flags & 0xFF,
-                        "unknown_flags_high_byte": segment.raw_flags >> 8,
+                        "terrain_layer": segment.raw_flags >> 8,
                     }
                     for segment in geometry.segments
                 ],
@@ -486,22 +671,72 @@ def export_area42_editor_scene(
         building_placements_native + prop_placements_native
     )
     static_meshes = {
-        lod.visual.mesh.resource.name_hash: lod.visual.mesh
-        for placement in renderable_structure_placements_native
-        for lod in placement.actor.lods
+        part.visual.mesh.resource.name_hash: part.visual.mesh
+        for actor in actors.archetypes.values()
+        for lod in actor.lods for part in lod.parts
     }
+    static_meshes.update({part.visual.mesh.resource.name_hash: part.visual.mesh
+                          for lod in landing.lods for part in lod.parts})
     for _, mesh in sorted(static_meshes.items()):
         geometry_entries.append(_static_geometry_entry(mesh, buffer))
+    human_meshes = {
+        lod.visual.mesh.resource.name_hash: lod.visual.mesh
+        for actor in skin_archetypes.values() for lod in actor.lods
+    }
+    for _, mesh in sorted(human_meshes.items()):
+        geometry_entries.append(_human_geometry_entry(mesh, buffer))
+    for template in scatter.templates:
+        geometry_entries.append(_scatter_geometry_entry(template, buffer))
+
+    scatter_batches = []
+    scatter_placements = []
+    for p in scatter.placements:
+        batch = p.batch
+        batch_id = f"scatter-batch:{batch.resource.name_hash:08x}"
+        scatter_batches.append({
+            "id": batch_id, "resource": _resource(batch.resource),
+            "raw_descriptor_hex": batch.raw_bytes.hex(),
+            "source_name_hash": f"0x{batch.source_name_hash:08X}",
+            "scene_instance_offset": p.offset, "raw_scene_header_hex": p.raw_header.hex(),
+            "instance_buffer_offset": batch.instance_buffer_offset,
+            "instance_count": len(batch.instances), "instance_stride": 80,
+            "instance_buffer": buffer.add(b"".join(i.raw_bytes for i in batch.instances)),
+            "fade_distances_f32": list(batch.fade_distances),
+            "unknown_tail_f32": list(batch.unknown_tail_f32),
+            "material_pointer_field": batch.material_pointer_field,
+            "geometry": _scatter_geometry_id(batch.template),
+        })
+        for instance in batch.instances:
+            matrix = p.world_matrix(instance)
+            scatter_placements.append({
+                "id": f"{batch_id}:instance:{instance.index:04d}",
+                "editor_collection": "static-scatter",
+                "archetype": {"native_class": "native-static-scatter",
+                              "asset_name": f"source:0x{batch.source_name_hash:08X}"},
+                "preview_status": "native-static-transform; wind-and-distance-fade-not-simulated",
+                "native": {"batch": batch_id, "instance_index": instance.index,
+                           "record_offset": instance.offset,
+                           "unknown_word_4c": f"0x{instance.unknown_word:08X}",
+                           "matrix_conversion": "native column-vector matrix transposed then composed with scene placement"},
+                "matrix_row_major_f32": [float(v) for v in matrix.reshape(-1)],
+                "instance_color_rgb_f32": [float(v) for v in instance.color_rgb],
+                "lods": [{"index": 0, "geometry": _scatter_geometry_id(batch.template),
+                          "material_slots": [f"material:{batch.material.resource.name_hash:08x}"]}],
+            })
 
     material_records: dict[int, NativeMaterial] = {}
     texture_images: dict[int, tuple[object, object]] = {}
     placement_lod_slots: dict[tuple[int, int], list[str]] = {}
+    placement_lod_states: dict[tuple[int, int], list[dict[str, object]]] = {}
     for placement_index, placement in enumerate(scene.placements):
         for lod in placement.children:
             slots = terrain_material_slots(scene.reader, lod)
             placement_lod_slots[(placement_index, lod.index)] = [
                 f"material:{slot.material.resource.name_hash:08x}" for slot in slots
             ]
+            placement_lod_states[(placement_index, lod.index)] = [
+                terrain_segment_render_state(slots[s.raw_flags & 0xFF].material, s.raw_flags)
+                for s in lod.geometry.segments]
             for slot in slots:
                 material = slot.material
                 material_records[material.resource.name_hash] = material
@@ -512,8 +747,9 @@ def export_area42_editor_scene(
                         decode_texture_top_level(scene.reader, binding),
                     )
 
-    for placement in renderable_structure_placements_native:
-        for lod in placement.actor.lods:
+    all_rigid_lods = [lod for actor in actors.archetypes.values() for lod in actor.lods] + list(landing.lods)
+    for rigid_lod in all_rigid_lods:
+        for lod in rigid_lod.parts:
             for material in lod.visual.materials:
                 material_records[material.resource.name_hash] = material
                 binding = material.binding
@@ -522,6 +758,22 @@ def export_area42_editor_scene(
                         binding,
                         decode_texture_top_level(scene.reader, binding),
                     )
+
+    for actor in skin_archetypes.values():
+        for lod in actor.lods:
+            for material in lod.visual.materials:
+                material_records[material.resource.name_hash] = material
+                binding = material.binding
+                if binding is not None and binding.texture_hash not in texture_images:
+                    texture_images[binding.texture_hash] = (
+                        binding, decode_texture_top_level(scene.reader, binding)
+                    )
+    for batch in scatter.batches:
+        material = batch.material
+        material_records[material.resource.name_hash] = material
+        binding = material.binding
+        if binding is not None and binding.texture_hash not in texture_images:
+            texture_images[binding.texture_hash] = (binding, decode_texture_top_level(scene.reader, binding))
 
     output.mkdir(parents=True, exist_ok=True)
     texture_dir = output / "textures"
@@ -584,6 +836,7 @@ def export_area42_editor_scene(
                         "material_slots": placement_lod_slots[
                             (placement_index, lod.index)
                         ],
+                        "segment_render_states": placement_lod_states[(placement_index, lod.index)],
                     }
                     for lod in placement.children
                 ],
@@ -593,6 +846,8 @@ def export_area42_editor_scene(
     object_placements: list[dict[str, object]] = []
     for placement in world.placements:
         actor = placement.actor
+        human = skin_archetypes.get(actor.resource.name_hash) if actor else None
+        rigid = actors.archetypes.get(actor.resource.name_hash) if actor else None
         collection = classify_editor_collection(
             actor.native_class if actor else None,
             actor.asset_name if actor else None,
@@ -604,6 +859,8 @@ def export_area42_editor_scene(
                     f"{placement.index:04d}"
                 ),
                 "editor_collection": collection,
+                "preview_status": ("native-reference-mesh; animation-not-applied" if human
+                                   else "native-reference-pose; animation-and-component-visibility-not-applied" if rigid else "population-definition; not-a-fixed-actor"),
                 "native": {
                     "bucket_index": placement.bucket_index,
                     "bucket_hash": f"0x{placement.bucket_hash:08X}",
@@ -612,6 +869,10 @@ def export_area42_editor_scene(
                     "raw_header_hex": placement.raw_header.hex(),
                     "raw_header_sha256": _sha256(placement.raw_header),
                     "packed_yaw_quaternion_zw": f"0x{placement.packed_rotation:08X}",
+                    "packed_quaternion_xy": f"0x{placement.packed_rotation_xy:08X}",
+                    "list_pointer_field": placement.list_pointer_field,
+                    "list_offset": placement.list_offset,
+                    "list_index": placement.list_index,
                 },
                 "archetype": (
                     {
@@ -644,7 +905,8 @@ def export_area42_editor_scene(
                         ),
                         "destruction_state": lod.visual.destruction_state,
                         "geometry": (
-                            "geometry:static:"
+                            ("geometry:human:" if human else "geometry:static:")
+                            +
                             f"{lod.visual.mesh.resource.name_hash:08x}"
                         ),
                         "material_slots": [
@@ -652,12 +914,33 @@ def export_area42_editor_scene(
                             for material in lod.visual.materials
                         ],
                     }
-                    for lod in actor.lods
+                    for lod in (human.lods if human else ())
                 ]
                 if actor is not None
                 else [],
             }
         )
+        if rigid is not None:
+            object_placements[-1]["lods"] = [_parts_lod(lod) for lod in rigid.lods]
+
+    landing_placements = [{"id": "landing-visual:" + p.label,
+                           "editor_collection": "landing-sites",
+                           "archetype": {"native_class": "MarkerType", "asset_name": "marker_landing_zone",
+                                         "resource": _resource(landing.actor_resource)},
+                           "preview_status": landing.report["status"],
+                           "native": p.provenance,
+                           "position_f32": p.position.tolist(),
+                           "matrix_row_major_f32": p.matrix.reshape(-1).tolist(),
+                           "lods": [_parts_lod(lod) for lod in landing.lods]}
+                          for p in landing.placements]
+    rendered_ids = {p["id"] for p in object_placements if p["lods"]}
+    scene_markers = [m for m in spawns.scene_markers
+                     if not m.get("world_placement") or
+                     f"world-placement:{m['world_placement']['bucket_index']:02d}:{m['world_placement']['index']:04d}" not in rendered_ids]
+
+    def collection_meshes(collection: str) -> set[str]:
+        return {part["geometry"] for p in object_placements if p["editor_collection"] == collection
+                for lod in p["lods"] for part in lod.get("parts", [lod])}
 
     lod0_vertices = sum(
         len(placement.children[0].geometry.local_positions)
@@ -683,30 +966,28 @@ def export_area42_editor_scene(
         "world_placements": len(object_placements),
         "building_placements": len(building_placements_native),
         "building_renderable_placements": sum(
-            bool(placement.actor.lods) for placement in building_placements_native
+            bool(p["lods"]) for p in object_placements if p["editor_collection"] == "buildings"
         ),
-        "building_geometries": len(
-            {
-                lod.visual.mesh.resource.name_hash
-                for placement in building_placements_native
-                for lod in placement.actor.lods
-            }
-        ),
+        "building_geometries": len(collection_meshes("buildings")),
         "prop_placements": len(prop_placements_native),
         "prop_renderable_placements": sum(
-            bool(placement.actor.lods) for placement in prop_placements_native
+            bool(p["lods"]) for p in object_placements if p["editor_collection"] == "props"
         ),
-        "prop_geometries": len(
-            {
-                lod.visual.mesh.resource.name_hash
-                for placement in prop_placements_native
-                for lod in placement.actor.lods
-            }
-        ),
+        "prop_geometries": len(collection_meshes("props")),
         "renderable_structure_placements": sum(
-            bool(placement.actor.lods)
-            for placement in renderable_structure_placements_native
+            bool(p["lods"]) for p in object_placements if p["editor_collection"] in {"buildings", "props"}
         ),
+        "human_placements": len(humans.placements),
+        "human_renderable_placements": sum(bool(p["lods"]) for p in object_placements if p["editor_collection"] == "humans"),
+        "human_geometries": len(human_meshes),
+        "scatter_batches": len(scatter_batches),
+        "scatter_placements": len(scatter_placements),
+        "scatter_geometries": len(scatter.templates),
+        "scene_markers": len(scene_markers),
+        "landing_sites": sum(m["kind"] == "landing-site" for m in spawns.scene_markers),
+        "spawn_definitions": len(spawns.spawn_definitions),
+        "landing_visual_placements": len(landing_placements),
+        "renderable_world_placements": len(rendered_ids),
         "geometries": len(geometry_entries),
         "materials": len(material_records),
         "textures": len(texture_entries),
@@ -716,7 +997,7 @@ def export_area42_editor_scene(
         "lod1_vertices": lod1_vertices,
         "lod1_triangles": lod1_triangles,
     }
-    for key, expected in AREA42_COUNTS.items():
+    for key, expected in AREA42_V4_COUNTS.items():
         if counts[key] != expected:
             raise ValueError(
                 f"Area 42 editor scene count mismatch for {key}: "
@@ -785,12 +1066,69 @@ def export_area42_editor_scene(
         "textures": texture_entries,
         "placements": placements,
         "object_placements": object_placements,
+        "landing_placements": landing_placements,
+        "landing_visual_validation": landing.report,
+        "actor_visual_inventory": [{"resource": _resource(i.actor.resource), "asset_name": i.actor.asset_name,
+                                    "native_class": i.actor.native_class, "placements": i.placement_count,
+                                    "status": i.status, "detail": i.detail,
+                                    "references": [{"pointer_field": r.pointer_field, "resource": _resource(r.resource),
+                                                    "selected": r.selected} for r in i.references]}
+                                   for i in actors.inventory],
+        "actor_visual_skeletons": [{"archetype": _resource(a.actor.resource),
+                                    "lods": [{"index": lod.index, "skeleton": _skeleton_report(lod.skeleton)} for lod in a.lods]}
+                                   for a in actors.archetypes.values()],
+        "landing_skeletons": [_skeleton_report(lod.skeleton) for lod in landing.lods],
+        "nonhuman_skin_skeletons": [{"archetype": _resource(a.actor.resource),
+                                     "skeleton": _skeleton_report(a.lods[0].visual.skeleton)}
+                                    for key, a in skin_archetypes.items() if key not in human_archetypes],
+        "staging": {"mode": "all-authored-content", "mission_activation": "not-evaluated",
+                    "native_lists": [{"bucket": b.index, "layer_hash": f"0x{b.type_hash:08X}",
+                                      "list_offsets": list(b.list_offsets), "placements": len(b.placements)} for b in world.buckets],
+                    "authority": "native identities and mission layers; editor categories do not change runtime ownership"},
+        "scatter_placements": scatter_placements,
+        "scatter_batches": scatter_batches,
+        "scatter_validation": scatter_report(scatter),
+        "scene_markers": scene_markers,
+        "spawn_definitions": list(spawns.spawn_definitions),
+        "spawn_layers": list(spawns.spawn_layers),
+        "regions": list(spawns.regions),
+        "entity_tags": list(spawns.tags),
+        "script_calls": list(spawns.script_calls),
+        "spawn_validation": spawns.report,
+        "human_archetypes": [
+            {
+                "resource": _resource(actor.actor.resource),
+                "variant_hash": f"0x{actor.variant_hash:08X}",
+                "lod_pointer_offset": actor.lod_pointer_offset,
+                "variant_table_offset": actor.variant_table_offset,
+                "selected_variant_offset": actor.selected_variant_offset,
+                "pose_status": actor.lods[0].visual.pose_status,
+                "skeleton": {
+                    "load_group": actor.lods[0].visual.skeleton.load_group,
+                    "shared_offset": actor.lods[0].visual.skeleton.shared_offset,
+                    "raw_shared_header_hex": actor.lods[0].visual.skeleton.raw_shared_header.hex(),
+                    "bone_buffer_offset": actor.lods[0].visual.skeleton.bone_buffer_offset,
+                    "bones": [{"index": b.index, "offset": b.offset,
+                               "name_hash": f"0x{b.name_hash:08X}",
+                               "parent_index": b.parent_index,
+                               "raw_hex": b.raw_bytes.hex(),
+                               "local_position_f32": list(b.local_position),
+                               "local_quaternion_xyzw_f32": list(b.local_quaternion_xyzw),
+                               "local_scale_f32": b.local_scale}
+                              for b in actor.lods[0].visual.skeleton.bones],
+                },
+            } for _, actor in sorted(human_archetypes.items())
+        ],
         "unknowns": [
-            "The high byte of terrain segment raw_flags is preserved without assigned semantics.",
-            "Material flags other than verified U/V clamp bits are preserved without assigned semantics.",
+            "Terrain layer, alpha, RGB scale and blend equations carry executable evidence; special shader paths and dynamic UV scaling remain incomplete.",
             "Viewport orientation and remaining render states still require a same-location retail comparison.",
-            "Buildings and placed PropType set pieces use their native geometry, transforms, materials, and texture bindings; dynamic actor mesh families remain metadata-only.",
-            "Collision, missions, destruction-state editing, and streaming are outside schema v2.",
+            "Native double-sided flags are preserved; the preview disables culling until front-face parity is verified.",
+            "Skinned and segmented actors show their authored reference pose; runtime animation, component visibility and held attachments are not applied.",
+            "Scatter wind and distance fade are preserved but not simulated; translucent instances are not sorted individually in the preview.",
+            "Native landing visuals use authored region centers; runtime collision projection, activation and animation are not applied.",
+            "Authored placements and script registrations do not imply simultaneous runtime activation.",
+            "Environment lighting, fog, runtime shadows and same-location visual parity are not yet verified.",
+            "Collision, mission execution, destruction-state editing, streaming simulation and native writes are outside schema v4.",
         ],
     }
     manifest_path = output / "scene.json"

@@ -33,7 +33,8 @@ class TextureBinding:
 
     @property
     def format_name(self) -> str:
-        return {8: "BC1/DXT1", 9: "BC3/DXT5"}.get(
+        return {0: "Xbox swizzled A8R8G8B8", 4: "Xbox linear A8R8G8B8",
+                5: "Xbox linear A4R4G4B4", 8: "BC1/DXT1", 9: "BC3/DXT5"}.get(
             self.format_word, f"unknown-0x{self.format_word:X}"
         )
 
@@ -88,6 +89,74 @@ def bc3_mip_chain_size(width: int, height: int, levels: int) -> int:
     return total
 
 
+def argb8_mip_chain_size(width: int, height: int, levels: int) -> int:
+    """Exact compact mip sizes for native swizzled Xbox A8R8G8B8."""
+    if width <= 0 or height <= 0 or width & (width - 1) or height & (height - 1):
+        raise ValueError("swizzled A8R8G8B8 dimensions must be positive powers of two")
+    if not 1 <= levels <= max(width, height).bit_length():
+        raise ValueError("swizzled A8R8G8B8 mip count is invalid")
+    total = 0
+    for _ in range(levels):
+        total += width * height * 4
+        width, height = max(1, width // 2), max(1, height // 2)
+    return total
+
+
+def decode_swizzled_argb8_top_level(payload: bytes, width: int, height: int) -> Image.Image:
+    """Decode format-table entry 0 (D3DFMT_A8R8G8B8 = 6).
+
+    Source pixels are little-endian ARGB dwords (BGRA bytes), in Xbox compact
+    Morton order. Only dimensions with a verified power-of-two layout are accepted.
+    Native compressed formats are not passed through this unswizzler.
+    """
+    required = argb8_mip_chain_size(width, height, 1)
+    if len(payload) < required:
+        raise ValueError("swizzled A8R8G8B8 top-level payload is truncated")
+    x = np.arange(width, dtype=np.uint32)
+    y = np.arange(height, dtype=np.uint32)
+    x_offsets = np.zeros(width, dtype=np.uint32)
+    y_offsets = np.zeros(height, dtype=np.uint32)
+    source_bit, address_bit = 1, 1
+    while source_bit < width or source_bit < height:
+        if source_bit < width:
+            x_offsets |= ((x & source_bit) != 0).astype(np.uint32) * address_bit
+            address_bit <<= 1
+        if source_bit < height:
+            y_offsets |= ((y & source_bit) != 0).astype(np.uint32) * address_bit
+            address_bit <<= 1
+        source_bit <<= 1
+    native = np.frombuffer(payload, dtype=np.uint8, count=required).reshape(-1, 4)
+    bgra = native[y_offsets[:, None] | x_offsets[None, :]]
+    return Image.fromarray(bgra[:, :, [2, 1, 0, 3]], mode="RGBA")
+
+
+def linear_argb_size(width: int, height: int, levels: int, bytes_per_pixel: int) -> int:
+    """Verified tight-row subset of Xbox linear textures; no guessed pitch."""
+    if width <= 0 or height <= 0 or bytes_per_pixel not in (2, 4):
+        raise ValueError("linear ARGB dimensions or pixel size are invalid")
+    if levels != 1:
+        raise ValueError("only one-level native linear ARGB textures are verified")
+    if width * bytes_per_pixel % 64:
+        raise ValueError("linear ARGB row pitch is not native 64-byte aligned")
+    return width * height * bytes_per_pixel
+
+
+def decode_linear_argb_top_level(payload: bytes, width: int, height: int, format_word: int) -> Image.Image:
+    """Binding format4 -> native0x12 BGRA8; format5 -> native0x1D ARGB4444."""
+    if format_word not in (4, 5):
+        raise ValueError("unsupported linear ARGB binding format")
+    required = linear_argb_size(width, height, 1, 4 if format_word == 4 else 2)
+    if len(payload) < required:
+        raise ValueError("linear ARGB top-level payload is truncated")
+    if format_word == 4:
+        bgra = np.frombuffer(payload, dtype=np.uint8, count=required).reshape(height, width, 4)
+        rgba = bgra[:, :, [2, 1, 0, 3]]
+    else:
+        argb = np.frombuffer(payload, dtype="<u2", count=width * height).reshape(height, width)
+        rgba = np.stack([((argb >> shift) & 15) * 17 for shift in (8, 4, 0, 12)], axis=2).astype(np.uint8)
+    return Image.fromarray(rgba, mode="RGBA")
+
+
 def decode_material(reader: BlockReader, resource: ResourceRecord) -> NativeMaterial:
     if resource.type_hash != MATERIAL_TYPE:
         raise ValueError(f"resource 0x{resource.name_hash:08X} is not a material")
@@ -117,10 +186,14 @@ def decode_material(reader: BlockReader, resource: ResourceRecord) -> NativeMate
         )
     if not width or not height or not levels:
         raise ValueError("material texture binding has zero dimensions or mip levels")
-    expected_size = {
-        8: dxt1_mip_chain_size(width, height, levels),
-        9: bc3_mip_chain_size(width, height, levels),
+    size_function = {
+        0: argb8_mip_chain_size,
+        4: lambda w, h, n: linear_argb_size(w, h, n, 4),
+        5: lambda w, h, n: linear_argb_size(w, h, n, 2),
+        8: dxt1_mip_chain_size,
+        9: bc3_mip_chain_size,
     }.get(format_word)
+    expected_size = size_function(width, height, levels) if size_function else None
     if expected_size is None:
         raise ValueError(f"unsupported terrain texture format word 0x{format_word:X}")
     if expected_size != texture.size:
@@ -298,6 +371,10 @@ def decode_dxt5_top_level(payload: bytes, width: int, height: int) -> Image.Imag
 
 def decode_texture_top_level(reader: BlockReader, binding: TextureBinding) -> Image.Image:
     payload = texture_payload(reader, binding)
+    if binding.format_word == 0:
+        return decode_swizzled_argb8_top_level(payload, binding.width, binding.height)
+    if binding.format_word in (4, 5):
+        return decode_linear_argb_top_level(payload, binding.width, binding.height, binding.format_word)
     if binding.format_word == 8:
         return decode_dxt1_top_level(payload, binding.width, binding.height)
     if binding.format_word == 9:

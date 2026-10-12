@@ -7,8 +7,9 @@ known source, known hashes, and independently preserved geometry to compare
 against.
 
 The foundation is **DAH-native**. Retail and recomp evidence stays read-only.
-The tool imports DAH data into a lossless scene model, records provenance, and
-eventually writes verified DAH packages. **CryptoEditor** is the standalone world
+The tool reconstructs DAH data in a provenance-carrying scene model while
+preserving native bytes; a verified native writer remains future work.
+**CryptoEditor** is the standalone world
 editor being built for the Pandemic Development Suite. It uses TrenchBroom as
 its primary interface foundation while keeping Battlefront `.wld`/`.ter` and
 other editor formats out of the native DAH save path.
@@ -48,16 +49,38 @@ are established.
 - A versioned, deterministic `.dahscene` interchange export containing all 92
   native terrain placements, both LODs, material bindings, decoded texture
   previews, preserved vertex/index bytes, and per-payload provenance hashes.
-- Native Area 42 world reconstruction containing all 41 placement buckets and
-  849 object records, including 18 building/world-structure placements at their
-  retail transforms, all 18 resolved building visuals, and all 23 placed
-  PropType set-piece visuals (41 renderable structure/set-dressing placements).
+- Native Area 42 world reconstruction containing both counted lists in all 41
+  buckets: 2,674 records across 150 archetypes, including 79 building-group
+  placements and 1,468 props. The older 849-record export was incomplete.
+- 132 rigid visual families cover 2,164 placements; all segmented components
+  use native bone attachments and reference transforms, not guessed destruction
+  states. Together with 371 pedestrian skins, 2,535 fixed actors have previews.
+- Native static scatter: all 654 batches and 15,121 instances, original mesh/UV
+  templates, transforms, RGB, and material cutout/blend states.
+- 295 authored human placements with three native LODs, selected clothing
+  variants, preserved skeletons/skin weights and a reference-pose preview.
+- Three script-registered landing regions now use their genuine native landing
+  visual: 11 components, 17 materials and five textures. Region-center placement
+  remains provisional until runtime collision projection is reproduced.
+- 139 random-population positions retain alternatives instead of invented fixed
+  actors; seven population/directed spawn definitions and mission-layer/tag/script
+  relationships remain separate from unevaluated runtime activation.
 - Executable-backed identification of the terrain stream as
   `FLOAT3, FLOAT2, D3DCOLOR`; CryptoEditor preserves the packed diffuse color
-  and uses its RGB channels for native terrain modulation.
+  plus signed segment-layer ordering, native vertex alpha, the basic RGB-times-two
+  shader path, LEQUAL depth and evidenced reverse-subtract detail blending.
 - Explicit support matrix for prototype, DAH1 retail, and DAH2 retail.
+
+The current interchange is [schema v4](docs/editor-scene-v3.md#schema-v4-current).
+The existing contract document retains v3 explicitly as history. Detailed native
+evidence is recorded for [scatter](docs/area42-scatter.md),
+[humans](docs/area42-humans.md), and [spawns/landing sites](docs/area42-spawns.md).
 - Architecture and reconstruction acceptance gates.
 - A milestone order that requires unchanged-map preservation before mutation.
+
+This is an all-authored-content inspection scene, not a captured playable mission.
+Animation, activation, collision-projected landing height, fog, shadows and full
+retail image parity remain open; native game-package writing is still disabled.
 
 No game files or generated meshes are stored in this repository.
 
@@ -95,7 +118,7 @@ python -m dahdev inspect "D:\path\to\blocks\sites\area42"
 ```
 
 See [the architecture](docs/architecture.md), [the roadmap](docs/roadmap.md),
-[the editor-scene v2 contract](docs/editor-scene-v2.md),
+[the current editor-scene contract](docs/editor-scene-v3.md#schema-v4-current),
 [the CryptoEditor plan](docs/cryptoeditor.md),
 [the WorldEdit feature evaluation](docs/worldedit-evaluation.md),
 [the Area 42 golden-map notes](docs/area42-golden-map.md), and the
